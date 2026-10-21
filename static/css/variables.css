@@ -1,0 +1,68 @@
+/* SAARTHI Design System - Production Grade Tokens */
+
+:root {
+    /* Color Palette - Ultra-Refined Obsidian & Clean Accents */
+    --bg-base: #08090D;
+    --bg-surface: #0E1118;
+    --bg-surface-elevated: #151924;
+    --bg-surface-glass: rgba(14, 17, 24, 0.78);
+    --bg-glass-heavy: rgba(10, 12, 18, 0.88);
+    --bg-overlay: rgba(4, 5, 8, 0.82);
+
+    /* Borders */
+    --border-subtle: rgba(255, 255, 255, 0.07);
+    --border-medium: rgba(255, 255, 255, 0.12);
+    --border-highlight: rgba(99, 102, 241, 0.35);
+
+    /* Primary Accent - Royal Indigo / Electric Blue */
+    --accent-primary: #4F46E5;
+    --accent-primary-hover: #4338CA;
+    --accent-glow: rgba(79, 70, 229, 0.3);
+    
+    /* Secondary & Mode Accents */
+    --accent-cyan: #06B6D4;
+    --accent-cyan-glow: rgba(6, 182, 212, 0.25);
+    
+    /* Semantic Status Accents */
+    --status-safe: #10B981;
+    --status-safe-bg: rgba(16, 185, 129, 0.12);
+    --status-safe-border: rgba(16, 185, 129, 0.28);
+    
+    --status-warning: #F59E0B;
+    --status-warning-bg: rgba(245, 158, 11, 0.12);
+    --status-warning-border: rgba(245, 158, 11, 0.28);
+    
+    --status-critical: #EF4444;
+    --status-critical-bg: rgba(239, 68, 68, 0.12);
+    --status-critical-border: rgba(239, 68, 68, 0.28);
+
+    --status-info: #3B82F6;
+    --status-info-bg: rgba(59, 130, 246, 0.12);
+    --status-info-border: rgba(59, 130, 246, 0.28);
+
+    /* Typography */
+    --text-primary: #F8FAFC;
+    --text-secondary: #94A3B8;
+    --text-muted: #64748B;
+    --text-inverse: #08090D;
+
+    /* Spacing & Radii */
+    --radius-full: 9999px;
+    --radius-xl: 18px;
+    --radius-lg: 14px;
+    --radius-md: 10px;
+    --radius-sm: 6px;
+
+    /* Shadows & Elevation */
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.35);
+    --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.45);
+    --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.6);
+    --shadow-dock: 0 12px 40px rgba(0, 0, 0, 0.7), 0 0 1px 1px rgba(255, 255, 255, 0.08);
+
+    /* Motion */
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-fast: 150ms var(--ease-out);
+    --transition-normal: 250ms var(--ease-out);
+    --transition-slow: 400ms var(--ease-out);
+}
