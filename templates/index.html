@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <meta
+      name="description"
+      content="SAARTHI - Advanced AI-Powered Visual Navigation Assistant with Social Intelligence & Spatial Memory"
+    />
+    <title>SAARTHI - Assistive Vision & Spatial Intelligence</title>
+
+    <!-- Google Fonts: Inter & JetBrains Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- Production Stylesheet -->
+    <link rel="stylesheet" href="/static/css/main.css" />
+    <link rel="manifest" href="/static/manifest.json" />
+    <meta name="theme-color" content="#08090D" />
+    <link rel="apple-touch-icon" href="/static/images/icon-512.png" />
+  </head>
+
+  <body>
+    <!-- Screen Reader Announcer -->
+    <div id="a11y-announcer" class="sr-only" aria-live="assertive"></div>
+    <div id="console-log" role="log" aria-label="Debug Console" aria-hidden="true"></div>
+
+    <!-- 1. REALITY VIEWPORT (Camera Feed & Dynamic Scene Simulator) -->
+    <video
+      id="cam"
+      autoplay
+      playsinline
+      muted
+      aria-label="Live Camera Feed"
+      role="img"
+    ></video>
+    <canvas id="sim-canvas" aria-label="Interactive Scene Simulator"></canvas>
+
+    <!-- 2. HIGH-PRECISION RETICLE (Micro Navigation & Targeting) -->
+    <div id="reticle-overlay" aria-hidden="true">
+      <div class="reticle-corner top-left"></div>
+      <div class="reticle-corner top-right"></div>
+      <div class="reticle-corner bottom-left"></div>
+      <div class="reticle-corner bottom-right"></div>
+      <div id="reticle-vector" class="reticle-vector-line"></div>
+      <div id="reticle-pip" class="reticle-center-pip"></div>
+      <div id="reticle-badge" class="reticle-target-badge" style="display:none;">TARGET</div>
+    </div>
+
+    <!-- 3. TOP APPLICATION BAR -->
+    <header class="app-header" role="banner">
+      <div class="header-brand-pill">
+        <div class="brand-glyph">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M2.05 12a10 10 0 0 1 19.9 0 10 10 0 0 1-19.9 0Z"></path>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-name">SAARTHI</span>
+          <span class="brand-sub">Assistive Vision</span>
+        </div>
+      </div>
+
+      <div class="header-center-info">
+        <div id="statusPill" class="header-status-pill" role="status" aria-live="polite">
+          <div id="statusDot" class="status-indicator-dot"></div>
+          <span id="statusText">Ready</span>
+        </div>
+        <div id="searchPill" class="search-active-pill" role="status" aria-live="assertive">
+          SEARCHING...
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <button id="btn-header-drawer" class="header-tool-btn" type="button" aria-label="Open Telemetry Drawer" title="Telemetry & Intelligence (I)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="9" y1="3" x2="9" y2="21"></line>
+          </svg>
+        </button>
+        <button id="btn-header-settings" class="header-tool-btn" type="button" aria-label="Open Settings" title="Settings (S)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- 4. VIEWPORT CENTER & START HERO -->
+    <main class="viewport-center">
+      <div id="hero-start-card">
+        <div class="hero-start-icon">
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M2.05 12a10 10 0 0 1 19.9 0 10 10 0 0 1-19.9 0Z"></path>
+          </svg>
+        </div>
+        <h1 class="hero-start-title">SAARTHI Visual Navigation</h1>
+        <p class="hero-start-desc">
+          AI-powered assistive vision with real-time social intent recognition, precision micro-guidance, and long-term spatial memory.
+        </p>
+        <button id="hero-start-btn" class="hero-start-btn" type="button">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <polygon points="5 3 19 12 5 21 5 3"></polygon>
+          </svg>
+          <span>Start Navigation Assistant</span>
+        </button>
+        <div class="hero-hint-text">
+          Press Spacebar • Double-Click anywhere • Hold Mic to speak
+        </div>
+      </div>
+    </main>
+
+    <!-- ALERT / FEEDBACK BANNER (Dynamic Island Style) -->
+    <div id="main-alert-banner" class="alert-pill-banner" role="alert" aria-live="polite">
+      <span id="alert-banner-text">SAARTHI ACTIVE</span>
+    </div>
+
+    <!-- 5. TASK HUD LIVE ACTIVITY CARD (Top Right) -->
+    <aside id="task-hud-card" role="complementary" aria-label="Active Task Steps">
+      <div class="task-hud-header">
+        <div class="task-hud-title">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="9 11 12 14 22 4"></polyline>
+            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+          </svg>
+          <span id="task-card-name">Interactive Task Guide</span>
+        </div>
+        <span id="task-card-step-badge" class="intel-badge" style="color:var(--accent-cyan);">Step 1/4</span>
+      </div>
+
+      <div class="task-progress-bar-track">
+        <div id="task-progress-fill" class="task-progress-bar-fill"></div>
+      </div>
+
+      <div id="task-step-list" class="task-step-list" role="list"></div>
+      
+      <div id="task-visual-feedback" style="font-size:12px; color:var(--text-secondary); line-height:1.4;"></div>
+
+      <div class="task-action-btns">
+        <button id="task-btn-done" class="btn-pill-primary" type="button">Step Done ✓</button>
+        <button id="task-btn-skip" class="btn-pill-secondary" type="button">Skip</button>
+        <button id="task-btn-cancel" class="btn-pill-secondary" type="button" style="color:var(--status-critical);">Cancel</button>
+      </div>
+    </aside>
+
+    <!-- 6. INTELLIGENCE & TELEMETRY DRAWER (Right Slide-Over) -->
+    <div id="intelligence-drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+      <div class="drawer-header">
+        <h2 id="drawer-title" style="font-size:14px; font-weight:700; color:var(--text-primary); display:flex; align-items:center; gap:8px;">
+          <span>🧠</span> Real-Time Telemetry & Cognition
+        </h2>
+        <button id="drawer-close-btn" class="header-tool-btn" style="width:32px; height:32px;" type="button" aria-label="Close Drawer">✕</button>
+      </div>
+
+      <div class="drawer-body">
+        <!-- Telemetry Metrics -->
+        <div class="intel-card">
+          <div class="intel-card-header">
+            <span class="intel-card-title">Live Sensor Telemetry</span>
+            <span id="compass-badge" class="intel-badge">0° N</span>
+          </div>
+          <div class="telemetry-grid">
+            <div class="telemetry-cell">
+              <div id="telem-dist" class="telemetry-val">--</div>
+              <div class="telemetry-label">Distance</div>
+            </div>
+            <div class="telemetry-cell">
+              <div id="telem-dir" class="telemetry-val">--</div>
+              <div class="telemetry-label">Direction</div>
+            </div>
+            <div class="telemetry-cell">
+              <div id="telem-lat" class="telemetry-val">--</div>
+              <div class="telemetry-label">Latency</div>
+            </div>
+            <div class="telemetry-cell">
+              <div id="telem-fps" class="telemetry-val">30</div>
+              <div class="telemetry-label">Rate</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Social Cognition -->
+        <div class="intel-card">
+          <div class="intel-card-header">
+            <span class="intel-card-title">Social Intelligence</span>
+            <span class="intel-badge" style="color:#93C5FD;">Intent Engine</span>
+          </div>
+          <div id="drawer-social-cue" class="status-insight-banner social" style="display:none;">
+            <span>👥</span>
+            <div id="drawer-social-text">No active social cues detected.</div>
+          </div>
+          <div id="drawer-social-empty" style="font-size:12px; color:var(--text-muted);">
+            Scanning line of sight for interpersonal gestures and facial micro-expressions...
+          </div>
+        </div>
+
+        <!-- Environmental Affordances -->
+        <div class="intel-card">
+          <div class="intel-card-header">
+            <span class="intel-card-title">Environment & Affordances</span>
+            <span class="intel-badge">Scene State</span>
+          </div>
+          <div id="drawer-env-cue" class="status-insight-banner warning" style="display:none;">
+            <span>🚧</span>
+            <div id="drawer-env-text">Clear path.</div>
+          </div>
+          <div id="drawer-env-empty" style="font-size:12px; color:var(--text-muted);">
+            Analyzing affordances, door mechanisms, clearances, and obstacles...
+          </div>
+        </div>
+
+        <!-- Detected Objects -->
+        <div class="intel-card">
+          <div class="intel-card-header">
+            <span class="intel-card-title">Detected Objects</span>
+            <span id="drawer-obj-count" class="intel-badge">0 items</span>
+          </div>
+          <div id="drawer-object-list" class="object-list-container" role="list">
+            <div style="color:var(--text-muted); font-size:12px; text-align:center; padding:10px;">Scanning environment...</div>
+          </div>
+        </div>
+
+        <!-- AI Reasoning Stream -->
+        <div class="intel-card">
+          <div class="intel-card-header">
+            <span class="intel-card-title">AI Reasoning Stream</span>
+          </div>
+          <div id="drawer-thinking-log" class="intel-reasoning-log" role="log">
+            Multimodal processor initialized. Streaming video frames and voice inputs...
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 7. BOTTOM FLOATING CONTROL DOCK -->
+    <nav id="control-dock" aria-label="Primary Navigation Controls">
+      <button id="dock-btn-power" class="dock-btn-power" type="button" aria-label="Toggle Power">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+          <line x1="12" y1="2" x2="12" y2="12"></line>
+        </svg>
+        <span id="dock-power-text">Start</span>
+        <span class="dock-tooltip">Power (Space)</span>
+      </button>
+
+      <button id="dock-btn-mic" class="dock-btn dock-btn-mic" type="button" aria-label="Push-to-Talk Microphone">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+          <line x1="12" y1="19" x2="12" y2="23"></line>
+          <line x1="8" y1="23" x2="16" y2="23"></line>
+        </svg>
+        <span class="dock-tooltip">Push-to-Talk (Hold)</span>
+      </button>
+
+      <button id="dock-btn-ask" class="dock-btn" type="button" aria-label="Ask Question or Command">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+        </svg>
+        <span class="dock-tooltip">Ask AI (A)</span>
+      </button>
+
+      <div class="dock-divider"></div>
+
+      <button id="dock-btn-micro" class="dock-btn" type="button" aria-label="Micro Navigation Target Lock">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"></circle>
+          <line x1="22" y1="12" x2="18" y2="12"></line>
+          <line x1="6" y1="12" x2="2" y2="12"></line>
+          <line x1="12" y1="6" x2="12" y2="2"></line>
+          <line x1="12" y1="22" x2="12" y2="18"></line>
+        </svg>
+        <span class="dock-tooltip">Micro-Nav (M)</span>
+      </button>
+
+      <button id="dock-btn-task" class="dock-btn" type="button" aria-label="Interactive Task Guide">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="9 11 12 14 22 4"></polyline>
+          <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+        </svg>
+        <span class="dock-tooltip">Task Guide (T)</span>
+      </button>
+
+      <button id="dock-btn-memory" class="dock-btn" type="button" aria-label="Memory Palace">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+          <circle cx="12" cy="10" r="3"></circle>
+        </svg>
+        <span class="dock-tooltip">Memory Palace (P)</span>
+      </button>
+
+      <button id="dock-btn-intel" class="dock-btn" type="button" aria-label="Toggle Intelligence Drawer">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+          <line x1="9" y1="3" x2="9" y2="21"></line>
+        </svg>
+        <span class="dock-tooltip">Intel & Telemetry (I)</span>
+      </button>
+
+      <div class="dock-divider"></div>
+
+      <button id="dock-btn-settings" class="dock-btn" type="button" aria-label="Settings">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+        <span class="dock-tooltip">Settings (S)</span>
+      </button>
+    </nav>
+
+    <!-- 8. MODAL: ASK / COMMAND QUERY -->
+    <div id="modal-command" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="cmd-title">
+      <div class="modal-dialog">
+        <header class="modal-header">
+          <h3 id="cmd-title" style="font-size:15px; font-weight:700; color:var(--text-primary); display:flex; align-items:center; gap:8px;">
+            <span>💬</span> Ask SAARTHI AI
+          </h3>
+          <button class="modal-close-trigger header-tool-btn" style="width:30px; height:30px;" type="button">✕</button>
+        </header>
+        <div class="modal-body">
+          <div class="form-field">
+            <label class="form-label" for="command-input">Voice Command or Question</label>
+            <input id="command-input" type="text" placeholder="e.g. 'Where did I leave my keys?', 'Help me make coffee', 'Find a chair'..." autofocus />
+          </div>
+
+          <div class="form-field">
+            <span class="form-label">Suggested Presets</span>
+            <div class="chip-presets-container">
+              <button class="chip-btn preset-chip" data-cmd="Find a chair" type="button">🪑 Find Chair</button>
+              <button class="chip-btn preset-chip" data-cmd="Where did I leave my keys?" type="button">🔑 Where are keys?</button>
+              <button class="chip-btn preset-chip" data-cmd="Help me make coffee" type="button">☕ Help make coffee</button>
+              <button class="chip-btn preset-chip" data-cmd="Guide to elevator button" type="button">🎯 Guide to button</button>
+              <button class="chip-btn preset-chip" data-cmd="Tag this as My Desk" type="button">📍 Tag My Desk</button>
+              <button class="chip-btn preset-chip" data-cmd="Describe the scene ahead" type="button">👁️ Describe Scene</button>
+            </div>
+          </div>
+        </div>
+        <footer class="modal-footer">
+          <button class="btn-pill-secondary modal-close-trigger" type="button">Cancel</button>
+          <button id="command-submit-btn" class="btn-pill-primary" style="flex:0 0 auto;" type="button">Send Command</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- 9. MODAL: MEMORY PALACE -->
+    <div id="modal-memory" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="mem-title">
+      <div class="modal-dialog">
+        <header class="modal-header">
+          <h3 id="mem-title" style="font-size:15px; font-weight:700; color:var(--text-primary); display:flex; align-items:center; gap:8px;">
+            <span>📍</span> Long-Term Spatial Memory Palace
+          </h3>
+          <button class="modal-close-trigger header-tool-btn" style="width:30px; height:30px;" type="button">✕</button>
+        </header>
+        <div class="modal-body">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span class="form-label" style="color:var(--accent-cyan);">Tagged Locations</span>
+            <button id="btn-tag-loc" class="btn-pill-primary" style="padding:5px 12px; font-size:11px; flex:0 0 auto;" type="button">+ Tag Location</button>
+          </div>
+          <div id="memory-locations-list" class="object-list-container" style="max-height:140px;"></div>
+
+          <span class="form-label" style="margin-top:6px;">Historical Object Log</span>
+          <div id="memory-history-list" class="object-list-container" style="max-height:160px;"></div>
+        </div>
+        <footer class="modal-footer">
+          <button class="btn-pill-secondary modal-close-trigger" type="button">Close</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- 10. MODAL: SETTINGS -->
+    <div id="modal-settings" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="set-title">
+      <div class="modal-dialog">
+        <header class="modal-header">
+          <h3 id="set-title" style="font-size:15px; font-weight:700; color:var(--text-primary); display:flex; align-items:center; gap:8px;">
+            <span>⚙️</span> System Settings
+          </h3>
+          <button class="modal-close-trigger header-tool-btn" style="width:30px; height:30px;" type="button">✕</button>
+        </header>
+        <div class="modal-body">
+          <div class="form-field">
+            <label class="form-label" for="settings-api-key">Google Gemini API Key</label>
+            <input id="settings-api-key" type="password" placeholder="Enter your Gemini API Key..." />
+            <span class="form-subtext">Saved securely to .env and applied instantly without restarting the server.</span>
+          </div>
+
+          <div class="form-field">
+            <label class="form-label" for="settings-model-select">Multimodal Model</label>
+            <select id="settings-model-select">
+              <option value="gemini-2.5-flash">Gemini 2.5 Flash (Ultra-Low Latency & High Speed)</option>
+              <option value="gemini-1.5-flash">Gemini 1.5 Flash (High Stability)</option>
+              <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+            </select>
+          </div>
+
+          <div class="form-field">
+            <label class="form-label" for="settings-video-source">Vision Feed Mode</label>
+            <select id="settings-video-source">
+              <option value="camera">Live Device Webcam</option>
+              <option value="simulator">Interactive Scene Simulator (Demonstration Engine)</option>
+            </select>
+          </div>
+
+          <div class="form-field">
+            <label class="form-label" for="settings-scenario-select">Scene Simulator Scenario</label>
+            <select id="settings-scenario-select">
+              <option value="social">Social Corridor (Smiling Greeter & Waving Hand)</option>
+              <option value="elevator">Elevator Panel (Micro-Navigation to Button 4)</option>
+              <option value="coffee">Coffee Station (Interactive Step-by-Step Task)</option>
+              <option value="desk">Office Desk (Memory Palace Anchor & Valuables)</option>
+            </select>
+          </div>
+
+          <div class="form-field">
+            <label class="form-label" for="settings-volume-slider">Spatial Audio Volume</label>
+            <div style="display:flex; align-items:center; gap:12px;">
+              <input id="settings-volume-slider" type="range" min="0" max="1" step="0.05" value="0.8" style="flex:1;" />
+              <button id="btn-test-audio" class="btn-pill-secondary" type="button" style="padding:6px 12px; font-size:11px;">Test Audio 🔊</button>
+            </div>
+          </div>
+        </div>
+        <footer class="modal-footer">
+          <button class="btn-pill-secondary modal-close-trigger" type="button">Cancel</button>
+          <button id="settings-save-btn" class="btn-pill-primary" style="flex:0 0 auto;" type="button">Save Settings</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- External Audio Engine -->
+    <script src="/static/js/audio.js"></script>
+
+    <!-- Main Application Module -->
+    <script type="module" src="/static/js/main.js"></script>
+
+    <script>
+      // Service Worker Registration for PWA
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker
+            .register("/static/sw.js")
+            .then(reg => console.log("[SAARTHI SW] Registered scope:", reg.scope))
+            .catch(err => console.log("[SAARTHI SW] Skipped:", err));
+        });
+      }
+    </script>
+  </body>
+</html>
