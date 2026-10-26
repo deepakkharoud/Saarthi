@@ -37,6 +37,7 @@ export interface CampusReaderScreenProps {
   permissionResponse?: PermissionResponse | null;
   onRequestPermission?: () => Promise<PermissionResponse>;
   onRegisterScanTrigger?: (trigger: (() => Promise<void>) | null) => void;
+  onOpenLiveAssist?: () => void;
 }
 
 // Geometric layout tokens matching approved 3-section reference design
@@ -116,6 +117,7 @@ export const CampusReaderScreen: React.FC<CampusReaderScreenProps> = ({
   permissionResponse: propPermission,
   onRequestPermission: propRequestPermission,
   onRegisterScanTrigger,
+  onOpenLiveAssist,
 }) => {
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
@@ -671,12 +673,18 @@ export const CampusReaderScreen: React.FC<CampusReaderScreenProps> = ({
             {/* 2. Prominent Circular Surroundings Button in the Center */}
             <View style={styles.surroundingsWrapper}>
               <Pressable
-                onPress={executeSurroundingsVision}
+                onPress={() => {
+                  if (onOpenLiveAssist) {
+                    onOpenLiveAssist();
+                  } else {
+                    executeSurroundingsVision();
+                  }
+                }}
                 disabled={isCapturing}
                 accessible={true}
                 accessibilityRole="button"
-                accessibilityLabel="Surroundings. Describe what is visibly around you. Double-tap to take photo and hear scene analysis."
-                accessibilityHint="Takes a photo and describes obstacles, doors, stairs, and landmarks"
+                accessibilityLabel="Live Camera Assist and Surroundings. Describe what is visibly around you. Double-tap to activate."
+                accessibilityHint="Opens Live Camera Assist with real-time camera preview, scene analysis, and obstacle awareness"
                 style={({ pressed }) => [
                   styles.surroundingsCircleButton,
                   pressed && styles.surroundingsCirclePressed,

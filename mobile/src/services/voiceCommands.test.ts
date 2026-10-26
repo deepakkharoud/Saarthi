@@ -205,7 +205,7 @@ describe("voiceCommands — Deterministic Intent Parsing", () => {
       expect(parseVoiceCommand("go to previous screen").intent).toBe("go_back");
     });
 
-    it("correctly maps all 7 navigation intents to existing screen IDs in SCREEN_INTENT_MAP", () => {
+    it("correctly maps all navigation intents to existing screen IDs in SCREEN_INTENT_MAP", () => {
       const expectedMapping: Record<NavigationIntentType, string> = {
         open_home: "home",
         open_reader: "reader",
@@ -214,6 +214,7 @@ describe("voiceCommands — Deterministic Intent Parsing", () => {
         open_navigation: "navigation",
         open_voice: "voice",
         open_settings: "settings",
+        open_assist: "assist",
       };
 
       Object.entries(expectedMapping).forEach(([intent, screenId]) => {

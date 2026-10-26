@@ -13,7 +13,9 @@
         "ITSAppUsesNonExemptEncryption": false,
         "NSCameraUsageDescription": "Allow SAARTHI to access your camera to describe your surroundings and identify obstacles.",
         "NSMicrophoneUsageDescription": "Allow SAARTHI to access your microphone to ask questions about your surroundings.",
-        "NSSpeechRecognitionUsageDescription": "Allow SAARTHI to recognize your speech to answer questions about what you see."
+        "NSSpeechRecognitionUsageDescription": "Allow SAARTHI to recognize your speech to answer questions about what you see.",
+        "NSLocationWhenInUseUsageDescription": "Allow SAARTHI to access your location for campus map navigation and real-time turn-by-turn guidance.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Allow SAARTHI to access your location for campus map navigation and real-time turn-by-turn guidance."
       }
     },
     "android": {
@@ -27,7 +29,9 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION"
       ]
     },
     "web": {
@@ -51,6 +55,13 @@
           ]
         }
       ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow SAARTHI to access your location for campus map navigation and real-time turn-by-turn guidance."
+        }
+      ],
+      "@maplibre/maplibre-react-native",
       "expo-mlkit-ocr",
       "expo-status-bar"
     ],

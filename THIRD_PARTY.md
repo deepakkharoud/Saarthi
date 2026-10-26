@@ -37,6 +37,8 @@ This document tracks all external code, libraries, and assets used in the **Saar
 | `react-native-safe-area-context` | MIT | Dynamic safe area handling for notch/island |
 | `@expo/vector-icons` | MIT | Accessible iconography |
 | `expo-mlkit-ocr` | MIT | On-device Google ML Kit Text Recognition v2 |
+| `expo-location` | MIT | Real-time GPS location tracking and accuracy reporting |
+| `@maplibre/maplibre-react-native` | MIT | Interactive vector/raster campus mapping with OpenStreetMap tiles |
 | `jest` / `ts-jest` | MIT | Unit testing suite for deterministic application logic |
 
 

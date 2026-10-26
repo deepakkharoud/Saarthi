@@ -23,6 +23,7 @@ export interface VoiceCommandDispatchContext {
   onNavigateToScreen?: (screen: AppScreen) => void;
   onNavigateBack?: () => AppScreen | boolean | void | null;
   onNavigateToReader?: (mode?: "auto" | "timetable" | "sign" | "notice") => void;
+  onNavigateToAssist?: () => void;
   onNavigateToNavigation?: (destinationQuery?: string) => void;
   onNavigateToTimetable?: () => void;
   onTriggerScan?: () => Promise<void> | void;
@@ -194,7 +195,8 @@ export async function dispatchVoiceCommand(
     case "open_timetable":
     case "open_navigation":
     case "open_voice":
-    case "open_settings": {
+    case "open_settings":
+    case "open_assist": {
       const targetScreen: AppScreen =
         parsed.targetScreen ||
         SCREEN_INTENT_MAP[parsed.intent as NavigationIntentType] ||
@@ -327,12 +329,14 @@ export async function dispatchVoiceCommand(
     }
 
     case "what_is_ahead": {
-      const desc = "Opening camera to describe what is in front of you.";
+      const desc = "Opening Live Camera Assist with Gemma 4 vision.";
       await speechService.speak(desc, { force: true });
-      if (context.onNavigateToReader) {
-        context.onNavigateToReader("auto");
+      if (context.onNavigateToAssist) {
+        context.onNavigateToAssist();
       } else if (context.onNavigateToScreen) {
-        context.onNavigateToScreen("reader");
+        context.onNavigateToScreen("assist");
+      } else if (context.onNavigateToReader) {
+        context.onNavigateToReader("auto");
       }
       return desc;
     }

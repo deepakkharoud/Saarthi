@@ -14,7 +14,8 @@ export type NavigationIntentType =
   | "open_timetable"
   | "open_navigation"
   | "open_voice"
-  | "open_settings";
+  | "open_settings"
+  | "open_assist";
 
 export type VoiceIntentType =
   | "read_this"
@@ -44,6 +45,7 @@ export const SCREEN_INTENT_MAP: Record<NavigationIntentType, AppScreen> = {
   open_navigation: "navigation",
   open_voice: "voice",
   open_settings: "settings",
+  open_assist: "assist",
 };
 
 export interface ParsedVoiceCommand {
@@ -326,8 +328,12 @@ export function parseVoiceCommand(transcript: string): ParsedVoiceCommand {
     };
   }
 
-  // 6b. OPEN CAMPUS READER / SCAN
+  // 6b. OPEN CAMPUS READER / SCAN / READ ANYTHING
   if (
+    cleaned === "read anything" ||
+    cleaned === "open read anything" ||
+    cleaned === "read text" ||
+    cleaned === "read campus text" ||
     cleaned === "open campus reader" ||
     cleaned === "open reader" ||
     cleaned === "campus reader" ||
@@ -369,8 +375,11 @@ export function parseVoiceCommand(transcript: string): ParsedVoiceCommand {
     };
   }
 
-  // 6d. OPEN TIMETABLE / MY SCHEDULE
+  // 6d. OPEN TIMETABLE / MY DAY
   if (
+    cleaned === "my day" ||
+    cleaned === "open my day" ||
+    cleaned === "show my day" ||
     cleaned === "open timetable" ||
     cleaned === "open time table" ||
     cleaned === "open my timetable" ||
@@ -406,8 +415,13 @@ export function parseVoiceCommand(transcript: string): ParsedVoiceCommand {
     };
   }
 
-  // 6e. OPEN NAVIGATION / FIND A ROOM
+  // 6e. OPEN NAVIGATION / CAMPUS MAP
   if (
+    cleaned === "campus map" ||
+    cleaned === "open campus map" ||
+    cleaned === "map" ||
+    cleaned === "show map" ||
+    cleaned === "open map" ||
     cleaned === "open navigation" ||
     cleaned === "navigate" ||
     cleaned === "find a room" ||
@@ -429,8 +443,10 @@ export function parseVoiceCommand(transcript: string): ParsedVoiceCommand {
     };
   }
 
-  // 6f. OPEN VOICE ASSISTANT / VOICE HELP
+  // 6f. OPEN VOICE ASSISTANT / TALK TO SAARTHI
   if (
+    cleaned === "talk to saarthi" ||
+    cleaned === "open talk to saarthi" ||
     cleaned === "open voice assistant" ||
     cleaned === "open voice" ||
     cleaned === "voice help" ||
@@ -464,6 +480,29 @@ export function parseVoiceCommand(transcript: string): ParsedVoiceCommand {
       intent: "open_settings",
       rawTranscript: transcript,
       targetScreen: "settings",
+      confidence: 0.98,
+    };
+  }
+
+  // 6h. OPEN LIVE CAMERA ASSIST
+  if (
+    cleaned === "open live assist" ||
+    cleaned === "open camera assist" ||
+    cleaned === "live assist" ||
+    cleaned === "camera assist" ||
+    cleaned === "start live assist" ||
+    cleaned === "start camera assist" ||
+    cleaned === "live camera assist" ||
+    cleaned === "open live camera assist" ||
+    cleaned === "open assist" ||
+    cleaned === "assist" ||
+    cleaned === "go to live assist" ||
+    cleaned === "go to camera assist"
+  ) {
+    return {
+      intent: "open_assist",
+      rawTranscript: transcript,
+      targetScreen: "assist",
       confidence: 0.98,
     };
   }
@@ -548,6 +587,9 @@ export function parseVoiceCommand(transcript: string): ParsedVoiceCommand {
     cleaned === "what do you see" ||
     cleaned.includes("what do you see") ||
     cleaned === "describe" ||
+    cleaned === "describe surroundings" ||
+    cleaned === "describe my surroundings" ||
+    cleaned.includes("describe surroundings") ||
     cleaned.includes("what is ahead") ||
     cleaned.includes("whats ahead")
   ) {

@@ -17,6 +17,7 @@ describe("screenRegistry — Screen Awareness Registry", () => {
     "navigation",
     "voice",
     "settings",
+    "assist",
   ];
 
   it("contains an entry for every valid AppScreen without missing definitions", () => {

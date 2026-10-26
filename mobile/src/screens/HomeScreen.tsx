@@ -126,7 +126,7 @@ const CornerTile: React.FC<CornerTileProps> = ({
 
 export interface HomeScreenProps {
   onNavigate: (
-    screen: "home" | "reader" | "results" | "timetable" | "navigation" | "voice" | "settings",
+    screen: "home" | "reader" | "results" | "timetable" | "navigation" | "voice" | "settings" | "assist",
     params?: any
   ) => void;
   activeRoute: NavigationRoute | null;
@@ -395,84 +395,89 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
       {/* 3. Main 4-Panel Framing Area (Top Tiles, Center Branding, Bottom Tiles) */}
       <View style={styles.mainFramingContainer}>
-        {/* Top Row: Read Campus Text (Left) & Campus Navigation (Right) */}
+        {/* Top Row: Read Anything (Left) & Campus Map (Right) */}
         <View style={styles.tilesRow}>
           <CornerTile
             position="topLeft"
             icon="camera"
             line1="Read"
-            line2="Campus Text"
+            line2="Anything"
             onPress={handleReadCampusText}
-            accessibilityLabel="Read Campus Text. Top-left corner. Double-tap to open camera and scan signs, timetables, or notices."
-            accessibilityHint="Opens camera scanner with reading modes"
+            accessibilityLabel="Read Anything. Top-left corner. Double-tap to open camera and read text, door signs, notice boards, or class timetables."
+            accessibilityHint="Opens camera reader with automatic text and timetable extraction"
           />
 
           <CornerTile
             position="topRight"
             icon="navigate"
             line1="Campus"
-            line2="Navigation"
+            line2="Map"
             onPress={handleCampusNavigation}
-            accessibilityLabel="Campus Navigation. Top-right corner. Double-tap to find accessible routes between rooms and campus landmarks."
-            accessibilityHint="Opens turn-by-turn accessible campus routing"
+            accessibilityLabel="Campus Map. Top-right corner. Double-tap to open interactive campus map, live GPS location, destination search, and walking navigation."
+            accessibilityHint="Opens interactive campus map and real-time navigation"
           />
         </View>
 
-        {/* Center Section: SAARTHI Campus Mode Branding & Soundwave */}
+        {/* Center Section: SAARTHI Campus Mode Branding & Honest Voice State */}
         <View style={styles.centerBrandingSection} accessible={true} accessibilityRole="header">
           <Text style={styles.brandTitle}>SAARTHI</Text>
           <Text style={styles.brandSubtitle}>CAMPUS MODE</Text>
 
-          {/* Audio Soundwave Indicator */}
-          <View style={styles.soundwaveContainer} accessibilityLabel="Voice active indicator">
-            {waveHeights.map((h, i) => (
-              <View
-                key={i}
-                style={[
-                  styles.soundwaveBar,
-                  {
-                    height: h,
-                    backgroundColor: waveColors[i],
-                  },
-                ]}
-              />
-            ))}
-          </View>
-
-          <Text style={styles.startHint}>Tap any corner to get started.</Text>
+          {/* Audio Indicator: Real state only (never fake wave when inactive) */}
+          {isVoiceModeActive ? (
+            <View style={styles.soundwaveContainer} accessibilityLabel="Voice active indicator">
+              {waveHeights.map((h, i) => (
+                <View
+                  key={i}
+                  style={[
+                    styles.soundwaveBar,
+                    {
+                      height: h,
+                      backgroundColor: waveColors[i],
+                    },
+                  ]}
+                />
+              ))}
+            </View>
+          ) : (
+            <View style={styles.voiceStandbyContainer} accessibilityLabel="Voice assistant standby">
+              <Ionicons name="mic-outline" size={16} color="#64748B" />
+              <Text style={styles.voiceStandbyText}>Voice standby • Tap bottom-right to speak</Text>
+            </View>
+          )}
         </View>
 
-        {/* Bottom Row: My Timetable (Left) & Voice Assistant (Right) */}
+        {/* Bottom Row: My Day (Left) & Talk to Saarthi (Right) */}
         <View style={styles.tilesRow}>
           <CornerTile
             position="bottomLeft"
             icon="calendar"
             line1="My"
-            line2="Timetable"
+            line2="Day"
             onPress={handleMyTimetable}
             accessibilityLabel={
               nextClass && nextClass.entry
-                ? `My Timetable. Bottom-left corner. Next class is ${nextClass.entry.courseName} at ${nextClass.entry.startTime}. Double-tap to manage schedule.`
-                : "My Timetable. Bottom-left corner. Double-tap to view and manage your class schedule."
+                ? `My Day. Bottom-left corner. Next confirmed class is ${nextClass.entry.courseName} at ${nextClass.entry.startTime} in ${nextClass.entry.room}. Double-tap to view confirmed schedule.`
+                : "My Day. Bottom-left corner. No confirmed classes scheduled right now. Double-tap to view and manage confirmed schedule."
             }
-            accessibilityHint="Opens personal weekly timetable and class schedule"
+            accessibilityHint="Opens confirmed daily schedule and next class information"
           />
 
           <CornerTile
             position="bottomRight"
             icon={isVoiceModeActive ? "mic" : "mic-outline"}
-            line1={isVoiceModeActive ? "Voice Mode" : "Voice"}
-            line2={isVoiceModeActive ? "ACTIVE" : "Assistant"}
+            line1="Talk to"
+            line2="Saarthi"
             onPress={handleVoiceAssistant}
             accessibilityLabel={
               isVoiceModeActive
-                ? "Voice Mode is active. Bottom-right corner. Double-tap to turn voice mode off."
-                : "Voice Assistant. Bottom-right corner. Double-tap to turn global voice mode on."
+                ? "Talk to Saarthi. Active. Bottom-right corner. Double-tap to turn voice assistant off."
+                : "Talk to Saarthi. Bottom-right corner. Double-tap to activate voice assistant."
             }
             accessibilityHint={
               isVoiceModeActive
-                ? "Turns off voice navigation mode"
-                : "Enables global voice mode across all screens"
+                ? "Turns off voice assistant"
+                : "Activates push-to-talk voice assistant"
             }
           />
         </View>
@@ -700,12 +705,23 @@ const styles = StyleSheet.create({
     width: 4.5,
     borderRadius: 3,
   },
-  startHint: {
-    color: "#94A3B8",
-    fontSize: 14,
-    fontWeight: "500",
-    textAlign: "center",
+  voiceStandbyContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    backgroundColor: "rgba(15, 23, 42, 0.6)",
+    borderRadius: 16,
     marginTop: 14,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.06)",
+  },
+  voiceStandbyText: {
+    color: "#94A3B8",
+    fontSize: 12,
+    fontWeight: "600",
     letterSpacing: 0.2,
   },
 });

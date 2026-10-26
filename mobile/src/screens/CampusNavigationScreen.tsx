@@ -1,4 +1,19 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+/**
+ * Saarthi Campus Map & GPS Navigation Screen.
+ *
+ * Implements a real map-and-navigation workflow with live GPS, Valhalla walking routes,
+ * MapLibre interactive canvas, and spoken turn-by-turn guidance.
+ *
+ * Design & Accessibility (Part G & Standing Rules):
+ * - Full interactive map occupying primary visual area.
+ * - Spoken turn-by-turn guidance and large accessible controls (>= 56dp touch target).
+ * - Real GPS accuracy diagnostics and staleness warnings.
+ * - Single clear "Start Navigation" button.
+ * - Only Repeat, Stop Speaking, and End Navigation controls during active guidance.
+ * - Honest Indoor separation (Part F): Discloses QR/landmark indoor confirmation vs outdoor GPS.
+ */
+
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   StyleSheet,
   View,
@@ -7,927 +22,1049 @@ import {
   Pressable,
   TextInput,
   Switch,
+  ActivityIndicator,
   AccessibilityInfo,
+  Platform,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Colors } from "../theme/colors";
 import { speechService } from "../services/speech";
 import { hapticsService } from "../services/haptics";
 import {
-  CampusRouter,
-  CampusGraph,
-  CampusNode,
-  NavigationRoute,
-} from "../navigation/campusRouter";
-import sampleCampusData from "../data/sample_campus_graph.json";
+  locationService,
+  RealGpsLocation,
+  LocationDiagnostics,
+  GpsAccuracyLevel,
+} from "../services/locationService";
+import {
+  outdoorRoutingService,
+  OutdoorRoute,
+  RouteCoordinates,
+} from "../services/outdoorRoutingService";
+import {
+  navigationProgressService,
+  NavigationProgressState,
+} from "../services/navigationProgressService";
+import {
+  CHANDIGARH_UNIVERSITY_POIS,
+  CampusPoi,
+  searchCampusPois,
+} from "../data/campusSurveyData";
+import { CampusMapView } from "../components/CampusMapView";
+import { NavigationRoute } from "../navigation/campusRouter";
 
 export interface CampusNavigationScreenProps {
   initialStartNodeId?: string;
   initialDestinationQuery?: string;
   onNavigateBack: () => void;
   onActiveRouteChanged?: (route: NavigationRoute | null) => void;
+  onOpenLiveAssist?: () => void;
 }
 
 export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
-  initialStartNodeId,
   initialDestinationQuery,
   onNavigateBack,
   onActiveRouteChanged,
+  onOpenLiveAssist,
 }) => {
-  const routerRef = useRef<CampusRouter>(new CampusRouter(sampleCampusData as CampusGraph));
-  const [startNodeId, setStartNodeId] = useState<string>(
-    initialStartNodeId || "entrance_main"
+  const insets = useSafeAreaInsets();
+
+  // Location & GPS State
+  const [currentLocation, setCurrentLocation] = useState<RealGpsLocation | null>(null);
+  const [gpsDiagnostics, setGpsDiagnostics] = useState<LocationDiagnostics | null>(null);
+  const [isLocationDenied, setIsLocationDenied] = useState<boolean>(false);
+  const [isGpsDisabled, setIsGpsDisabled] = useState<boolean>(false);
+  const [locationErrorMessage, setLocationErrorMessage] = useState<string | null>(null);
+
+  // Search & Destination State
+  const [searchQuery, setSearchQuery] = useState<string>(initialDestinationQuery || "");
+  const [selectedPoi, setSelectedPoi] = useState<CampusPoi | null>(null);
+  const [avoidStairs, setAvoidStairs] = useState<boolean>(false);
+
+  // Navigation & Route State
+  const [isCalculatingRoute, setIsCalculatingRoute] = useState<boolean>(false);
+  const [activeOutdoorRoute, setActiveOutdoorRoute] = useState<OutdoorRoute | null>(null);
+  const [navProgress, setNavProgress] = useState<NavigationProgressState>(
+    navigationProgressService.getState()
   );
-  const [selectedDestination, setSelectedDestination] = useState<CampusNode | null>(null);
-  const [destinationSearch, setDestinationSearch] = useState<string>(initialDestinationQuery || "");
-  const [avoidStairs, setAvoidStairs] = useState<boolean>(true);
-  const [activeRoute, setActiveRoute] = useState<NavigationRoute | null>(null);
-  const [currentStepIndex, setCurrentStepIndex] = useState<number>(0);
-  const [isRouteCompleted, setIsRouteCompleted] = useState<boolean>(false);
   const [routeError, setRouteError] = useState<string | null>(null);
-  const [isSelectingStart, setIsSelectingStart] = useState<boolean>(false);
 
-  const allDestinations: CampusNode[] = routerRef.current.getAllDestinations();
-  const startNode = routerRef.current.getNode(startNodeId);
+  // Map Controls State
+  const [isRecenterRequested, setIsRecenterRequested] = useState<boolean>(false);
+  const [navigationMode, setNavigationMode] = useState<"outdoor_gps" | "indoor_landmark">("outdoor_gps");
 
-  // Filter destinations based on search query
-  const filteredDestinations: CampusNode[] = destinationSearch.trim()
-    ? routerRef.current.searchDestinations(destinationSearch)
-    : allDestinations;
+  // Filtered POIs
+  const filteredPois = useMemo(() => {
+    return searchCampusPois(searchQuery);
+  }, [searchQuery]);
 
-  // Handle route calculation
-  const handleFindRoute = async () => {
-    if (!selectedDestination) {
-      setRouteError("Please select a destination from the verified campus landmarks below.");
+  // Initial destination preset if provided via query
+  useEffect(() => {
+    if (initialDestinationQuery && !selectedPoi) {
+      const matches = searchCampusPois(initialDestinationQuery);
+      if (matches.length > 0) {
+        setSelectedPoi(matches[0]);
+      }
+    }
+  }, [initialDestinationQuery]);
+
+  // Subscribe to navigation progress updates
+  useEffect(() => {
+    const unsubscribe = navigationProgressService.subscribe((state) => {
+      setNavProgress(state);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Initialize and watch device location
+  useEffect(() => {
+    let isMounted = true;
+
+    const handleLocationUpdate = (loc: RealGpsLocation) => {
+      if (!isMounted) return;
+      setCurrentLocation(loc);
+      navigationProgressService.processGpsUpdate(loc);
+    };
+
+    const handleDiagnostics = (diag: LocationDiagnostics) => {
+      if (!isMounted) return;
+      setGpsDiagnostics(diag);
+      setIsLocationDenied(!diag.permissionGranted);
+      setIsGpsDisabled(!diag.servicesEnabled);
+    };
+
+    (async () => {
+      const perm = await locationService.startWatchingLocation(
+        handleLocationUpdate,
+        handleDiagnostics
+      );
+
+      if (!isMounted) return;
+
+      if (!perm.granted) {
+        setIsLocationDenied(true);
+        setLocationErrorMessage(perm.errorMessage || "Location permission denied.");
+        await speechService.speak(
+          "Location permission is required for campus map navigation. Please allow location access in phone Settings.",
+          { force: true }
+        );
+      } else if (!perm.servicesEnabled) {
+        setIsGpsDisabled(true);
+        setLocationErrorMessage("Device GPS is turned off. Please turn on Location in Settings.");
+        await speechService.speak("Device location is turned off. Please enable GPS in phone Settings.", {
+          force: true,
+        });
+      }
+    })();
+
+    return () => {
+      isMounted = false;
+      locationService.stopWatchingLocation(handleLocationUpdate);
+    };
+  }, []);
+
+  // Handle route recalculation when user deviates
+  const handleRecalculateRoute = useCallback(
+    async (devGps: RealGpsLocation) => {
+      if (!selectedPoi) return;
+
+      const startCoord: RouteCoordinates = {
+        latitude: devGps.latitude,
+        longitude: devGps.longitude,
+      };
+      const destCoord: RouteCoordinates = {
+        latitude: selectedPoi.latitude,
+        longitude: selectedPoi.longitude,
+      };
+
+      try {
+        const newRoute = await outdoorRoutingService.calculateRoute(startCoord, destCoord, {
+          avoidStairs,
+          destinationName: selectedPoi.name,
+        });
+
+        if (newRoute.status === "success") {
+          setActiveOutdoorRoute(newRoute);
+          navigationProgressService.startNavigation(newRoute, handleRecalculateRoute);
+          await speechService.speak(
+            `New route calculated. Distance: ${newRoute.totalDistanceMeters} meters. ${newRoute.maneuvers[0]?.instruction || ""}`,
+            { force: true }
+          );
+        }
+      } catch {
+        // Safe isolate
+      }
+    },
+    [selectedPoi, avoidStairs]
+  );
+
+  // START NAVIGATION ACTION
+  const handleStartNavigation = async () => {
+    if (!selectedPoi) {
+      setRouteError("Please select a verified destination from the campus list below.");
       await speechService.speak("Please select a destination first.", { force: true });
       return;
     }
 
-    await hapticsService.triggerButtonPress();
-    setRouteError(null);
-
-    const route = routerRef.current.findRoute(startNodeId, selectedDestination.id, { avoidStairs });
-    setActiveRoute(route);
-    setCurrentStepIndex(0);
-    setIsRouteCompleted(false);
-    onActiveRouteChanged?.(route);
-
-    if (route.status === "success") {
-      await hapticsService.triggerSuccess();
-      const firstStep = route.steps[0];
-      const announcement = `Route found. Total distance: ${Math.round(route.totalDistanceMeters)} meters across ${route.steps.length} steps. ${firstStep?.spokenInstruction || ""}`;
-      await speechService.speak(announcement, { force: true });
-    } else if (route.status === "no_accessible_route") {
-      const msg = `No accessible route found without stairs from ${startNode?.label || "your start"} to ${selectedDestination.label}. Stairs are required to reach this destination.`;
-      setRouteError(msg);
-      await speechService.speak(msg, { force: true });
-    } else if (route.status === "already_at_destination") {
-      const msg = `You are already at ${selectedDestination.label}.`;
-      setRouteError(msg);
-      await speechService.speak(msg, { force: true });
-    } else {
-      const msg = `Could not find a connected campus path to ${selectedDestination.label}. Please verify starting location.`;
-      setRouteError(msg);
-      await speechService.speak(msg, { force: true });
-    }
-  };
-
-  const handleNextStep = async () => {
-    if (!activeRoute) return;
-    await hapticsService.triggerButtonPress();
-
-    const advanceRes = routerRef.current.advanceStep();
-    if (advanceRes.isFinished) {
-      setIsRouteCompleted(true);
-      await hapticsService.triggerSuccess();
+    if (!currentLocation || currentLocation.isStale) {
+      setRouteError("Waiting for real GPS location fix. Please ensure you are outdoors with clear sky view.");
       await speechService.speak(
-        `You have arrived at ${selectedDestination?.label || "your destination"}.`,
+        "Acquiring GPS location fix. Please wait for satellite signal before starting navigation.",
         { force: true }
       );
-    } else {
-      const nextIdx = routerRef.current.getCurrentStepIndex();
-      setCurrentStepIndex(nextIdx);
-      if (advanceRes.step) {
-        const stepMsg = `Step ${nextIdx + 1} of ${activeRoute.steps.length}: ${advanceRes.step.spokenInstruction}${advanceRes.step.tactileGuidance ? ` ${advanceRes.step.tactileGuidance}` : ""}`;
-        await speechService.speak(stepMsg, { force: true });
+      return;
+    }
+
+    await hapticsService.triggerButtonPress();
+    setIsCalculatingRoute(true);
+    setRouteError(null);
+
+    const startCoord: RouteCoordinates = {
+      latitude: currentLocation.latitude,
+      longitude: currentLocation.longitude,
+    };
+    const destCoord: RouteCoordinates = {
+      latitude: selectedPoi.latitude,
+      longitude: selectedPoi.longitude,
+    };
+
+    try {
+      const route = await outdoorRoutingService.calculateRoute(startCoord, destCoord, {
+        avoidStairs,
+        destinationName: selectedPoi.name,
+      });
+
+      setIsCalculatingRoute(false);
+
+      if (route.status === "success") {
+        setActiveOutdoorRoute(route);
+        navigationProgressService.startNavigation(route, handleRecalculateRoute);
+        await hapticsService.triggerSuccess();
+        await speechService.speak(route.spokenSummary, { force: true });
+      } else {
+        setActiveOutdoorRoute(null);
+        setRouteError(route.spokenSummary);
+        await speechService.speak(route.spokenSummary, { force: true });
       }
+    } catch (err: any) {
+      setIsCalculatingRoute(false);
+      const errMsg = "Failed to calculate walking route. Please check your data connection.";
+      setRouteError(errMsg);
+      await speechService.speak(errMsg, { force: true });
     }
   };
 
-  const handleRepeatStep = async () => {
-    if (!activeRoute) return;
+  // REPEAT INSTRUCTION
+  const handleRepeatInstruction = async () => {
     await hapticsService.triggerBottomLeft();
-    const currentStep = activeRoute.steps[currentStepIndex];
-    if (currentStep) {
-      const msg = `Step ${currentStepIndex + 1} of ${activeRoute.steps.length}: ${currentStep.spokenInstruction}${currentStep.tactileGuidance ? ` ${currentStep.tactileGuidance}` : ""}`;
-      await speechService.speak(msg, { force: true });
-    }
+    await navigationProgressService.repeatCurrentInstruction();
   };
 
-  const handleCancelRoute = async () => {
+  // STOP SPEAKING
+  const handleStopSpeaking = async () => {
     await hapticsService.triggerBottomLeft();
-    routerRef.current.cancelRoute();
-    setActiveRoute(null);
-    setCurrentStepIndex(0);
-    setIsRouteCompleted(false);
+    await navigationProgressService.stopSpeaking();
+  };
+
+  // END NAVIGATION
+  const handleEndNavigation = async () => {
+    await hapticsService.triggerBottomLeft();
+    navigationProgressService.stopNavigation();
+    setActiveOutdoorRoute(null);
     onActiveRouteChanged?.(null);
-    await speechService.speak("Campus navigation cancelled.", { force: true });
+    await speechService.speak("Campus navigation stopped.", { force: true });
   };
+
+  // RECENTER MAP
+  const handleRecenter = async () => {
+    await hapticsService.triggerButtonPress();
+    setIsRecenterRequested(true);
+    const msg = currentLocation
+      ? `Centering map on current location. Accuracy: plus or minus ${Math.round(currentLocation.accuracyMeters)} meters.`
+      : "Centering map on campus center.";
+    await speechService.speak(msg, { force: true });
+  };
+
+  const accuracyBadgeColor = useMemo(() => {
+    if (!currentLocation || currentLocation.isStale) return Colors.textMuted;
+    switch (currentLocation.accuracyLevel) {
+      case "excellent":
+      case "good":
+        return "#05DF72";
+      case "moderate":
+        return "#FACC15";
+      case "poor":
+      case "unusable":
+        return "#FB923C";
+      default:
+        return Colors.error;
+    }
+  }, [currentLocation]);
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
-      {/* 1. Top Header */}
-      <View style={styles.headerRow}>
+    <View style={[styles.screen, { paddingTop: Math.max(insets.top, 8) }]}>
+      {/* 1. TOP HEADER BAR */}
+      <View style={styles.topHeader}>
         <Pressable
           onPress={onNavigateBack}
           accessible={true}
           accessibilityRole="button"
-          accessibilityLabel="Back to Home"
+          accessibilityLabel="Back to Home Screen"
           style={styles.backButton}
         >
-          <Ionicons name="arrow-back" size={24} color={Colors.textPrimary} />
+          <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
           <Text style={styles.backButtonText}>Home</Text>
         </Pressable>
 
-        <Text style={styles.screenTitle} accessibilityRole="header">
-          Campus Navigation
+        <Text style={styles.headerTitle} accessibilityRole="header">
+          Campus Map & GPS
         </Text>
 
-        <View style={{ width: 40 }} />
-      </View>
-
-      {/* 2. Honest Map Data Disclosure */}
-      <View style={styles.disclaimerBanner} accessible={true}>
-        <Ionicons name="information-circle-outline" size={20} color={Colors.primary} />
-        <Text style={styles.disclaimerText}>
-          Demonstration Campus Layout (Turing Hall & Newton Center).
-          Indoor positioning relies on door-sign OCR or landmark confirmation.
-        </Text>
-      </View>
-
-      {/* 3. ACTIVE ROUTE VIEW (If navigating) */}
-      {activeRoute && activeRoute.status === "success" && (
-        <View style={styles.activeRouteSection} accessible={true}>
-          <View style={styles.activeRouteHeaderRow}>
-            <View style={styles.activeRouteBadge}>
-              <Text style={styles.activeRouteBadgeText}>NAVIGATION ACTIVE</Text>
-            </View>
-            <Text style={styles.activeRouteProgress}>
-              Step {currentStepIndex + 1} of {activeRoute.steps.length}
-            </Text>
-          </View>
-
-          {isRouteCompleted ? (
-            <View style={styles.completedCard}>
-              <Ionicons name="checkmark-circle" size={48} color={Colors.success} />
-              <Text style={styles.completedTitle}>Destination Reached</Text>
-              <Text style={styles.completedSubtitle}>
-                You have arrived at {selectedDestination?.label}.
-              </Text>
-              <Pressable
-                onPress={handleCancelRoute}
-                accessible={true}
-                accessibilityRole="button"
-                accessibilityLabel="Finish navigation session"
-                style={styles.finishRouteButton}
-              >
-                <Text style={styles.finishRouteButtonText}>Finish Navigation</Text>
-              </Pressable>
-            </View>
-          ) : (
-            <>
-              {/* Current Step Instruction Card */}
-              {activeRoute.steps[currentStepIndex] && (
-                <View style={styles.currentStepCard}>
-                  <Text style={styles.stepDistanceText}>
-                    Walk ~{Math.round(activeRoute.steps[currentStepIndex].distanceMeters)} meters
-                  </Text>
-                  <Text style={styles.stepInstructionText}>
-                    {activeRoute.steps[currentStepIndex].spokenInstruction}
-                  </Text>
-
-                  {activeRoute.steps[currentStepIndex].tactileGuidance ? (
-                    <View style={styles.tactileGuidanceWrap}>
-                      <Ionicons name="hand-left-outline" size={16} color={Colors.primary} />
-                      <Text style={styles.tactileGuidanceText}>
-                        {activeRoute.steps[currentStepIndex].tactileGuidance}
-                      </Text>
-                    </View>
-                  ) : null}
-
-                  {activeRoute.steps[currentStepIndex].hazards.length > 0 && (
-                    <View style={styles.hazardsWrap}>
-                      <Ionicons name="warning-outline" size={16} color={Colors.warning} />
-                      <Text style={styles.hazardsText}>
-                        Caution: {activeRoute.steps[currentStepIndex].hazards.join(", ")}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-              )}
-
-              {/* Navigation Controls */}
-              <View style={styles.navControlsRow}>
-                <Pressable
-                  onPress={handleNextStep}
-                  accessible={true}
-                  accessibilityRole="button"
-                  accessibilityLabel="Advance to Next Step"
-                  style={styles.nextStepButton}
-                >
-                  <Text style={styles.nextStepButtonText}>Next Step ➡️</Text>
-                </Pressable>
-
-                <Pressable
-                  onPress={handleRepeatStep}
-                  accessible={true}
-                  accessibilityRole="button"
-                  accessibilityLabel="Repeat current step instruction"
-                  style={styles.repeatStepButton}
-                >
-                  <Ionicons name="refresh" size={18} color={Colors.textPrimary} />
-                  <Text style={styles.repeatStepButtonText}>Repeat</Text>
-                </Pressable>
-
-                <Pressable
-                  onPress={handleCancelRoute}
-                  accessible={true}
-                  accessibilityRole="button"
-                  accessibilityLabel="Cancel active route"
-                  style={styles.cancelNavButton}
-                >
-                  <Ionicons name="close" size={18} color={Colors.error} />
-                  <Text style={styles.cancelNavButtonText}>Cancel</Text>
-                </Pressable>
-              </View>
-
-              {/* Full Steps List Overview */}
-              <Text style={styles.allStepsTitle}>Complete Route Steps</Text>
-              {activeRoute.steps.map((st, i) => (
-                <View
-                  key={i}
-                  style={[
-                    styles.stepOverviewItem,
-                    i === (activeRoute.currentStepIndex ?? currentStepIndex) && styles.stepOverviewItemCurrent,
-                  ]}
-                >
-                  <Text style={styles.stepOverviewNumber}>
-                    {i + 1}. {st.fromNode.label} ➔ {st.toNode.label}
-                  </Text>
-                  <Text style={styles.stepOverviewInstruction}>{st.spokenInstruction}</Text>
-                </View>
-              ))}
-            </>
-          )}
-        </View>
-      )}
-
-      {/* 4. ROUTE SETUP SECTION (If no route or re-planning) */}
-      {(!activeRoute || activeRoute.status !== "success") && (
-        <View style={styles.routeSetupSection}>
-          {/* Starting Point Selection */}
-          <Text style={styles.inputSectionLabel}>1. Starting Landmark</Text>
-          <View style={styles.startNodeCard}>
-            <View style={styles.startNodeTextWrap}>
-              <Text style={styles.startNodeTag}>CURRENT STARTING POINT</Text>
-              <Text style={styles.startNodeLabel}>{startNode?.label || "Select Starting Landmark"}</Text>
-              <Text style={styles.startNodeBuilding}>
-                {startNode?.building || "Turing Hall"} • Floor {startNode?.floor ?? 0}
-              </Text>
-            </View>
+        <View style={styles.headerRightActions}>
+          {onOpenLiveAssist && (
             <Pressable
-              onPress={() => setIsSelectingStart(!isSelectingStart)}
+              onPress={onOpenLiveAssist}
               accessible={true}
               accessibilityRole="button"
-              accessibilityLabel="Change starting campus location"
-              style={styles.changeStartButton}
+              accessibilityLabel="Look Ahead with Live Camera Assist"
+              accessibilityHint="Opens camera assist to describe doors, signs, and landmarks in front of you"
+              style={styles.headerAssistButton}
             >
-              <Text style={styles.changeStartButtonText}>
-                {isSelectingStart ? "Close" : "Change"}
-              </Text>
+              <Ionicons name="camera" size={20} color="#38BDF8" />
             </Pressable>
-          </View>
-
-          {/* Start node selector list if opened */}
-          {isSelectingStart && (
-            <View style={styles.startNodeListDropdown}>
-              <Text style={styles.dropdownTitle}>Select Starting Landmark:</Text>
-              {allDestinations.map((node) => (
-                <Pressable
-                  key={node.id}
-                  onPress={() => {
-                    setStartNodeId(node.id);
-                    setIsSelectingStart(false);
-                    speechService.speak(`Starting point set to ${node.label}.`, { force: true });
-                  }}
-                  style={[
-                    styles.dropdownItem,
-                    startNodeId === node.id && styles.dropdownItemSelected,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.dropdownItemText,
-                      startNodeId === node.id && styles.dropdownItemTextSelected,
-                    ]}
-                  >
-                    {node.label} ({node.building})
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
           )}
 
-          {/* Destination Search */}
-          <Text style={styles.inputSectionLabel}>2. Destination Landmark</Text>
-          <View style={styles.searchBar}>
-            <Ionicons name="search" size={20} color={Colors.textMuted} />
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search library, room 204, elevator, hall..."
-              placeholderTextColor={Colors.textPlaceholder}
-              value={destinationSearch}
-              onChangeText={setDestinationSearch}
-              accessible={true}
-              accessibilityLabel="Destination landmark search input"
-            />
-            {destinationSearch ? (
-              <Pressable onPress={() => setDestinationSearch("")}>
-                <Ionicons name="close-circle" size={18} color={Colors.textMuted} />
-              </Pressable>
-            ) : null}
-          </View>
-
-          {/* Selected Destination Indicator */}
-          {selectedDestination && (
-            <View style={styles.selectedDestBadge}>
-              <Ionicons name="checkmark-circle" size={18} color={Colors.primary} />
-              <Text style={styles.selectedDestText}>
-                Selected: {selectedDestination.label} ({selectedDestination.building})
-              </Text>
-            </View>
-          )}
-
-          {/* Avoid Stairs Toggle */}
-          <View style={styles.accessibilityOptionRow}>
-            <View style={styles.optionTextWrap}>
-              <Text style={styles.optionTitle}>Avoid Stairs (Accessible Routing)</Text>
-              <Text style={styles.optionDescription}>
-                Requires elevators and level corridors only. Refuses stairs strictly.
-              </Text>
-            </View>
-            <Switch
-              value={avoidStairs}
-              onValueChange={setAvoidStairs}
-              trackColor={{ false: Colors.border, true: Colors.primary }}
-              thumbColor="#FFFFFF"
-              accessible={true}
-              accessibilityLabel="Avoid stairs toggle switch"
-            />
-          </View>
-
-          {/* Route Error Notification */}
-          {routeError && (
-            <View style={styles.routeErrorCard} accessible={true} accessibilityRole="alert">
-              <Ionicons name="alert-circle" size={20} color={Colors.error} />
-              <Text style={styles.routeErrorText}>{routeError}</Text>
-            </View>
-          )}
-
-          {/* Calculate Route Button */}
           <Pressable
-            onPress={handleFindRoute}
+            onPress={handleRecenter}
             accessible={true}
             accessibilityRole="button"
-            accessibilityLabel="Find accessible route to selected destination"
-            style={styles.findRouteButton}
+            accessibilityLabel="Recenter map camera on your current GPS location"
+            accessibilityHint="Re-aligns map to your position"
+            style={styles.recenterButton}
           >
-            <Ionicons name="navigate" size={20} color="#FFFFFF" />
-            <Text style={styles.findRouteButtonText}>Find Accessible Route</Text>
+            <Ionicons name="locate" size={22} color="#38BDF8" />
           </Pressable>
+        </View>
+      </View>
 
-          {/* Destination Suggestions List */}
-          <Text style={styles.suggestionsTitle}>
-            Verified Campus Destinations ({filteredDestinations.length})
+      {/* 2. LIVE GPS DIAGNOSTICS BAR */}
+      <View style={styles.gpsStatusBar} accessible={true} accessibilityRole="summary">
+        <View style={styles.gpsStatusIndicator}>
+          <View style={[styles.gpsDot, { backgroundColor: accuracyBadgeColor }]} />
+          <Text style={styles.gpsStatusText}>
+            {currentLocation && !currentLocation.isStale
+              ? `GPS: ${currentLocation.accuracyLevel.toUpperCase()} (±${Math.round(currentLocation.accuracyMeters)}m)`
+              : "GPS: Acquiring fix..."}
           </Text>
+        </View>
 
-          {filteredDestinations.map((dest) => {
-            const isChosen = selectedDestination?.id === dest.id;
-            return (
-              <Pressable
-                key={dest.id}
-                onPress={() => {
-                  setSelectedDestination(dest);
-                  setRouteError(null);
-                  speechService.speak(`Selected destination: ${dest.label}.`, { force: true });
-                }}
-                accessible={true}
-                accessibilityRole="button"
-                accessibilityLabel={`Select destination ${dest.label} in ${dest.building}`}
-                style={[styles.destCard, isChosen && styles.destCardSelected]}
-              >
-                <View style={styles.destIconCircle}>
-                  <Ionicons
-                    name={
-                      dest.type === "room"
-                        ? "school-outline"
-                        : dest.type === "elevator"
-                        ? "swap-vertical-outline"
-                        : dest.type === "entrance"
-                        ? "log-in-outline"
-                        : "location-outline"
-                    }
-                    size={22}
-                    color={isChosen ? "#FFFFFF" : Colors.primary}
-                  />
-                </View>
-                <View style={styles.destTextWrap}>
-                  <Text style={[styles.destTitle, isChosen && styles.destTitleSelected]}>
-                    {dest.label}
-                  </Text>
-                  <Text style={styles.destSubtitle}>
-                    {dest.building} • Floor {dest.floor} • Type: {dest.type}
-                  </Text>
-                </View>
-                <Ionicons
-                  name={isChosen ? "radio-button-on" : "radio-button-off"}
-                  size={22}
-                  color={isChosen ? Colors.primary : Colors.textMuted}
-                />
-              </Pressable>
+        {/* Mode Toggle between Outdoor GPS & Indoor Confirmation */}
+        <Pressable
+          onPress={() => {
+            const newMode = navigationMode === "outdoor_gps" ? "indoor_landmark" : "outdoor_gps";
+            setNavigationMode(newMode);
+            speechService.speak(
+              newMode === "indoor_landmark"
+                ? "Switched to Indoor Landmark Mode. Indoor positioning relies on door-sign OCR and verified room plaques."
+                : "Switched to Outdoor GPS Navigation.",
+              { force: true }
             );
-          })}
+          }}
+          accessible={true}
+          accessibilityRole="button"
+          accessibilityLabel={`Current mode is ${navigationMode === "outdoor_gps" ? "Outdoor GPS" : "Indoor Landmark"}. Double-tap to switch.`}
+          style={styles.modeTogglePill}
+        >
+          <Ionicons
+            name={navigationMode === "outdoor_gps" ? "navigate-circle" : "business-outline"}
+            size={14}
+            color="#C084FC"
+          />
+          <Text style={styles.modeToggleText}>
+            {navigationMode === "outdoor_gps" ? "Outdoor GPS" : "Indoor Landmark"}
+          </Text>
+        </Pressable>
+      </View>
+
+      {/* 3. INDOOR MODE HONEST DISCLOSURE BANNER */}
+      {navigationMode === "indoor_landmark" && (
+        <View style={styles.indoorNoticeBanner} accessible={true} accessibilityRole="alert">
+          <Ionicons name="information-circle-outline" size={18} color="#C084FC" />
+          <Text style={styles.indoorNoticeText}>
+            Indoor Mode Active: Satellite GPS cannot penetrate indoor structures. Use "Read Anything" on door plaques for verified indoor positioning.
+          </Text>
         </View>
       )}
-    </ScrollView>
+
+      {/* 4. PERMISSION / GPS DISABLED WARNING */}
+      {(isLocationDenied || isGpsDisabled) && (
+        <View style={styles.warningBanner} accessible={true} accessibilityRole="alert">
+          <Ionicons name="warning-outline" size={20} color={Colors.warning} />
+          <Text style={styles.warningBannerText}>
+            {locationErrorMessage || "GPS Location is required for real outdoor turn-by-turn guidance."}
+          </Text>
+        </View>
+      )}
+
+      {/* 5. PRIMARY CONTENT AREA: INTERACTIVE FULL MAP */}
+      <View style={styles.mapContainer}>
+        <CampusMapView
+          currentLocation={currentLocation}
+          selectedDestination={selectedPoi}
+          destinations={CHANDIGARH_UNIVERSITY_POIS}
+          routeCoordinates={activeOutdoorRoute?.coordinates || []}
+          onSelectPoi={(poi) => {
+            setSelectedPoi(poi);
+            setRouteError(null);
+            speechService.speak(`Selected destination: ${poi.name}.`, { force: true });
+          }}
+          isRecenterRequested={isRecenterRequested}
+          onRecenterComplete={() => setIsRecenterRequested(false)}
+        />
+      </View>
+
+      {/* 6. GUIDANCE & ACTION AREA */}
+      <View style={styles.bottomSheetArea}>
+        {/* ACTIVE NAVIGATION INSTRUCTION CARD */}
+        {activeOutdoorRoute && navProgress.isActive && (
+          <View style={styles.activeNavCard} accessible={true}>
+            <View style={styles.navHeaderRow}>
+              <View style={styles.navActivePill}>
+                <Text style={styles.navActivePillText}>NAVIGATING</Text>
+              </View>
+              <Text style={styles.navRemainingDistText}>
+                ~{navProgress.remainingTotalDistanceMeters}m remaining
+              </Text>
+            </View>
+
+            <Text style={styles.navNextInstructionText}>
+              {navProgress.currentManeuver?.instruction || "Proceed along route."}
+            </Text>
+
+            {/* Accuracy Uncertainty Notice if needed */}
+            {navProgress.isAccuracyUncertain && (
+              <View style={styles.navCautionRow}>
+                <Ionicons name="alert-circle-outline" size={16} color={Colors.warning} />
+                <Text style={styles.navCautionText}>
+                  GPS uncertainty ±{Math.round(navProgress.gpsAccuracyMeters)}m. Confirm visual landmarks.
+                </Text>
+              </View>
+            )}
+
+            {/* Three Essential Navigation Controls: Repeat, Stop Speaking, End */}
+            <View style={styles.navControlsRow}>
+              <Pressable
+                onPress={handleRepeatInstruction}
+                accessible={true}
+                accessibilityRole="button"
+                accessibilityLabel="Repeat current spoken instruction"
+                style={styles.navActionButtonSecondary}
+              >
+                <Ionicons name="volume-high" size={20} color="#FFFFFF" />
+                <Text style={styles.navActionButtonText}>Repeat</Text>
+              </Pressable>
+
+              {onOpenLiveAssist && (
+                <Pressable
+                  onPress={onOpenLiveAssist}
+                  accessible={true}
+                  accessibilityRole="button"
+                  accessibilityLabel="Look Ahead with Live Camera Assist"
+                  accessibilityHint="Inspect doors, signs, and path with Gemma 4 vision"
+                  style={styles.navActionButtonSecondary}
+                >
+                  <Ionicons name="camera" size={20} color="#38BDF8" />
+                  <Text style={styles.navActionButtonText}>Look</Text>
+                </Pressable>
+              )}
+
+              <Pressable
+                onPress={handleStopSpeaking}
+                accessible={true}
+                accessibilityRole="button"
+                accessibilityLabel="Stop current speech"
+                style={styles.navActionButtonSecondary}
+              >
+                <Ionicons name="volume-mute" size={20} color="#FFFFFF" />
+                <Text style={styles.navActionButtonText}>Silence</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={handleEndNavigation}
+                accessible={true}
+                accessibilityRole="button"
+                accessibilityLabel="End navigation session"
+                style={styles.navActionButtonEnd}
+              >
+                <Ionicons name="close-circle" size={20} color="#FFFFFF" />
+                <Text style={styles.navActionButtonText}>End</Text>
+              </Pressable>
+            </View>
+          </View>
+        )}
+
+        {/* ARRIVED STATE CARD */}
+        {activeOutdoorRoute && navProgress.isArrived && (
+          <View style={styles.arrivedCard} accessible={true}>
+            <Ionicons name="checkmark-circle" size={42} color={Colors.success} />
+            <Text style={styles.arrivedTitle}>Destination Reached</Text>
+            <Text style={styles.arrivedSubtitle}>
+              You have arrived at {selectedPoi?.name}.
+            </Text>
+            <Pressable
+              onPress={handleEndNavigation}
+              accessible={true}
+              accessibilityRole="button"
+              accessibilityLabel="Finish navigation session"
+              style={styles.finishNavButton}
+            >
+              <Text style={styles.finishNavButtonText}>Finish Navigation</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {/* ROUTE SETUP SECTION (When not navigating) */}
+        {(!activeOutdoorRoute || (!navProgress.isActive && !navProgress.isArrived)) && (
+          <ScrollView
+            style={styles.setupScrollView}
+            contentContainerStyle={styles.setupScrollContent}
+            keyboardShouldPersistTaps="handled"
+          >
+            {/* Accessible Destination Search Input */}
+            <View style={styles.searchContainer}>
+              <Ionicons name="search" size={20} color="#94A3B8" />
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Search campus building, block, hostel..."
+                placeholderTextColor="#64748B"
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                accessible={true}
+                accessibilityLabel="Destination landmark search"
+                accessibilityHint="Type or use speech to search university points of interest"
+              />
+              {searchQuery ? (
+                <Pressable
+                  onPress={() => setSearchQuery("")}
+                  accessible={true}
+                  accessibilityLabel="Clear search text"
+                  style={styles.clearSearchButton}
+                >
+                  <Ionicons name="close-circle" size={18} color="#94A3B8" />
+                </Pressable>
+              ) : null}
+            </View>
+
+            {/* Selected Destination Tag */}
+            {selectedPoi && (
+              <View style={styles.selectedPoiCard}>
+                <Ionicons name="location" size={22} color="#05DF72" />
+                <View style={styles.selectedPoiInfo}>
+                  <Text style={styles.selectedPoiTitle}>{selectedPoi.name}</Text>
+                  <Text style={styles.selectedPoiDesc}>
+                    {selectedPoi.category.toUpperCase()} • {selectedPoi.tactileCues || "Surveyed POI"}
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* Avoid Stairs Toggle Switch */}
+            <View style={styles.stairsToggleRow}>
+              <View style={styles.stairsTextWrap}>
+                <Text style={styles.stairsTitle}>Avoid Stairs (Accessible Routing)</Text>
+                <Text style={styles.stairsSubtitle}>Requires step-free paved ramps and pathways</Text>
+              </View>
+              <Switch
+                value={avoidStairs}
+                onValueChange={setAvoidStairs}
+                trackColor={{ false: "#334155", true: "#005CE6" }}
+                thumbColor="#FFFFFF"
+                accessible={true}
+                accessibilityLabel="Avoid stairs toggle switch"
+              />
+            </View>
+
+            {/* Route Calculation Error */}
+            {routeError && (
+              <View style={styles.errorCard} accessible={true} accessibilityRole="alert">
+                <Ionicons name="alert-circle" size={20} color={Colors.error} />
+                <Text style={styles.errorCardText}>{routeError}</Text>
+              </View>
+            )}
+
+            {/* One Clear Start Navigation Button */}
+            <Pressable
+              onPress={handleStartNavigation}
+              disabled={isCalculatingRoute}
+              accessible={true}
+              accessibilityRole="button"
+              accessibilityLabel={
+                selectedPoi
+                  ? `Start navigation to ${selectedPoi.name}`
+                  : "Start navigation. Please select a destination first."
+              }
+              style={[styles.startNavButton, !selectedPoi && styles.startNavButtonDisabled]}
+            >
+              {isCalculatingRoute ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <>
+                  <Ionicons name="navigate" size={22} color="#FFFFFF" />
+                  <Text style={styles.startNavButtonText}>
+                    {selectedPoi ? `Start Navigation to ${selectedPoi.shortCode}` : "Select a Destination"}
+                  </Text>
+                </>
+              )}
+            </Pressable>
+
+            {/* Filtered Campus Landmarks List */}
+            <Text style={styles.poiSectionTitle}>
+              Verified Campus POIs ({filteredPois.length})
+            </Text>
+
+            {filteredPois.slice(0, 10).map((poi) => {
+              const isSelected = selectedPoi?.id === poi.id;
+              return (
+                <Pressable
+                  key={poi.id}
+                  onPress={() => {
+                    setSelectedPoi(poi);
+                    setRouteError(null);
+                    speechService.speak(`Selected destination: ${poi.name}.`, { force: true });
+                  }}
+                  accessible={true}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Select ${poi.name}, ${poi.category}`}
+                  style={[styles.poiItemCard, isSelected && styles.poiItemCardSelected]}
+                >
+                  <View style={styles.poiIconWrap}>
+                    <Ionicons
+                      name={
+                        poi.category === "entrance"
+                          ? "log-in"
+                          : poi.category === "hostel"
+                          ? "home"
+                          : poi.category === "dining"
+                          ? "restaurant"
+                          : "business"
+                      }
+                      size={20}
+                      color={isSelected ? "#05DF72" : "#94A3B8"}
+                    />
+                  </View>
+                  <View style={styles.poiItemTextWrap}>
+                    <Text style={[styles.poiItemTitle, isSelected && styles.poiItemTitleSelected]}>
+                      {poi.name}
+                    </Text>
+                    <Text style={styles.poiItemSubtitle}>
+                      {poi.category} • {poi.description}
+                    </Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        )}
+      </View>
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
+  screen: {
     flex: 1,
-    backgroundColor: Colors.background,
+    backgroundColor: "#030712",
   },
-  contentContainer: {
-    padding: 20,
-    paddingTop: 48,
-    paddingBottom: 60,
-  },
-  headerRow: {
+  topHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    minHeight: 56,
   },
   backButton: {
     flexDirection: "row",
     alignItems: "center",
+    minWidth: 56,
+    minHeight: 56,
     gap: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: Colors.surface,
-    borderWidth: 1.5,
-    borderColor: Colors.border,
   },
   backButtonText: {
-    fontSize: 14,
+    color: "#FFFFFF",
+    fontSize: 16,
     fontWeight: "700",
-    color: Colors.textPrimary,
   },
-  screenTitle: {
-    fontSize: 19,
-    fontWeight: "900",
-    color: Colors.textPrimary,
+  headerTitle: {
+    color: "#FFFFFF",
+    fontSize: 18,
+    fontWeight: "800",
+    letterSpacing: 0.3,
   },
-  disclaimerBanner: {
+  headerRightActions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    backgroundColor: Colors.primaryLight,
-    padding: 12,
-    borderRadius: 10,
-    marginBottom: 18,
-    borderWidth: 1,
-    borderColor: Colors.border,
+    gap: 8,
   },
-  disclaimerText: {
+  headerAssistButton: {
+    width: 56,
+    height: 56,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 28,
+    backgroundColor: "rgba(15, 23, 42, 0.75)",
+    borderWidth: 1,
+    borderColor: "#38BDF8",
+  },
+  recenterButton: {
+    width: 56,
+    height: 56,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 28,
+    backgroundColor: "rgba(15, 23, 42, 0.75)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.1)",
+  },
+  gpsStatusBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    backgroundColor: "rgba(15, 23, 42, 0.8)",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255, 255, 255, 0.06)",
+  },
+  gpsStatusIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  gpsDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  gpsStatusText: {
+    color: "#E2E8F0",
     fontSize: 12,
-    color: Colors.textSecondary,
+    fontWeight: "700",
+  },
+  modeTogglePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    backgroundColor: "rgba(117, 37, 230, 0.2)",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(192, 132, 252, 0.3)",
+    gap: 5,
+  },
+  modeToggleText: {
+    color: "#C084FC",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  indoorNoticeBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(117, 37, 230, 0.15)",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    gap: 10,
+  },
+  indoorNoticeText: {
+    color: "#E2E8F0",
+    fontSize: 12,
+    flex: 1,
     lineHeight: 16,
+  },
+  warningBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(239, 68, 68, 0.15)",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    gap: 10,
+  },
+  warningBannerText: {
+    color: "#FCA5A5",
+    fontSize: 12,
     flex: 1,
     fontWeight: "600",
   },
-  routeSetupSection: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 18,
-    borderWidth: 1.5,
-    borderColor: Colors.border,
-  },
-  inputSectionLabel: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: Colors.textMuted,
-    textTransform: "uppercase",
-    marginBottom: 8,
-  },
-  startNodeCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: Colors.backgroundAlt,
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    marginBottom: 16,
-  },
-  startNodeTextWrap: {
+  mapContainer: {
     flex: 1,
+    minHeight: 220,
   },
-  startNodeTag: {
-    fontSize: 10,
-    fontWeight: "800",
-    color: Colors.primary,
-    letterSpacing: 0.5,
-  },
-  startNodeLabel: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: Colors.textPrimary,
-  },
-  startNodeBuilding: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-  changeStartButton: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1.5,
-    borderColor: Colors.primary,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-  },
-  changeStartButtonText: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: Colors.primary,
-  },
-  startNodeListDropdown: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1.5,
-    borderColor: Colors.border,
-    borderRadius: 12,
-    padding: 10,
-    marginBottom: 16,
-    maxHeight: 200,
-  },
-  dropdownTitle: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: Colors.textMuted,
-    marginBottom: 6,
-  },
-  dropdownItem: {
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.borderLight,
-  },
-  dropdownItemSelected: {
-    backgroundColor: Colors.primaryLight,
-  },
-  dropdownItemText: {
-    fontSize: 13,
-    color: Colors.textPrimary,
-  },
-  dropdownItemTextSelected: {
-    fontWeight: "800",
-    color: Colors.primary,
-  },
-  searchBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: Colors.backgroundAlt,
-    borderWidth: 1.5,
-    borderColor: Colors.border,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 8,
-    marginBottom: 12,
-  },
-  searchInput: {
+  bottomSheetArea: {
     flex: 1,
-    fontSize: 14,
-    color: Colors.textPrimary,
-  },
-  selectedDestBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: Colors.primaryLight,
-    padding: 10,
-    borderRadius: 8,
-    marginBottom: 14,
-  },
-  selectedDestText: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: Colors.primary,
-  },
-  accessibilityOptionRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingVertical: 12,
+    backgroundColor: "#0B1120",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
     borderTopWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: Colors.borderLight,
-    marginBottom: 16,
+    borderTopColor: "rgba(255, 255, 255, 0.08)",
   },
-  optionTextWrap: {
-    flex: 1,
-    marginRight: 12,
-  },
-  optionTitle: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: Colors.textPrimary,
-    marginBottom: 2,
-  },
-  optionDescription: {
-    fontSize: 12,
-    color: Colors.textMuted,
-  },
-  routeErrorCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: Colors.errorBackground,
-    padding: 12,
-    borderRadius: 10,
-    marginBottom: 14,
-  },
-  routeErrorText: {
-    fontSize: 13,
-    color: Colors.error,
-    fontWeight: "700",
-    flex: 1,
-  },
-  findRouteButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    backgroundColor: Colors.primary,
-    paddingVertical: 14,
-    borderRadius: 12,
-    minHeight: 52,
-    marginBottom: 20,
-  },
-  findRouteButtonText: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "800",
-  },
-  suggestionsTitle: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: Colors.textMuted,
-    textTransform: "uppercase",
-    marginBottom: 10,
-  },
-  destCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: Colors.backgroundAlt,
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 8,
-    borderWidth: 1.5,
-    borderColor: Colors.border,
-  },
-  destCardSelected: {
-    borderColor: Colors.primary,
-    backgroundColor: "#F0F9FF",
-  },
-  destIconCircle: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: Colors.primaryLight,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 12,
-  },
-  destTextWrap: {
-    flex: 1,
-  },
-  destTitle: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: Colors.textPrimary,
-  },
-  destTitleSelected: {
-    color: Colors.primary,
-  },
-  destSubtitle: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginTop: 2,
-  },
-  activeRouteSection: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 18,
-    borderWidth: 2,
-    borderColor: Colors.primary,
-  },
-  activeRouteHeaderRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 14,
-  },
-  activeRouteBadge: {
-    backgroundColor: Colors.primary,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  activeRouteBadgeText: {
-    fontSize: 11,
-    fontWeight: "900",
-    color: "#FFFFFF",
-    letterSpacing: 0.5,
-  },
-  activeRouteProgress: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: Colors.primary,
-  },
-  currentStepCard: {
-    backgroundColor: Colors.backgroundAlt,
-    borderRadius: 14,
+  // Active Navigation Card Styles
+  activeNavCard: {
     padding: 16,
-    marginBottom: 16,
-    borderWidth: 1.5,
-    borderColor: Colors.border,
+    gap: 10,
   },
-  stepDistanceText: {
-    fontSize: 13,
+  navHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  navActivePill: {
+    backgroundColor: "rgba(5, 223, 114, 0.2)",
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#05DF72",
+  },
+  navActivePillText: {
+    color: "#05DF72",
+    fontSize: 12,
     fontWeight: "800",
-    color: Colors.primary,
-    marginBottom: 4,
   },
-  stepInstructionText: {
+  navRemainingDistText: {
+    color: "#38BDF8",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  navNextInstructionText: {
+    color: "#FFFFFF",
     fontSize: 18,
-    fontWeight: "900",
-    color: Colors.textPrimary,
-    lineHeight: 26,
-    marginBottom: 8,
+    fontWeight: "800",
+    lineHeight: 24,
+    marginVertical: 4,
   },
-  tactileGuidanceWrap: {
+  navCautionRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    backgroundColor: Colors.primaryLight,
-    padding: 8,
-    borderRadius: 8,
-    marginBottom: 6,
-  },
-  tactileGuidanceText: {
-    fontSize: 13,
-    color: Colors.primary,
-    fontWeight: "700",
-    flex: 1,
-  },
-  hazardsWrap: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: Colors.warningBackground,
+    backgroundColor: "rgba(245, 158, 11, 0.12)",
     padding: 8,
     borderRadius: 8,
   },
-  hazardsText: {
-    fontSize: 13,
-    color: Colors.warning,
-    fontWeight: "700",
+  navCautionText: {
+    color: "#FCD34D",
+    fontSize: 12,
     flex: 1,
   },
   navControlsRow: {
     flexDirection: "row",
     gap: 10,
-    marginBottom: 20,
+    marginTop: 8,
   },
-  nextStepButton: {
-    flex: 2,
-    backgroundColor: Colors.primary,
-    paddingVertical: 14,
-    borderRadius: 12,
+  navActionButtonSecondary: {
+    flex: 1,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    minHeight: 52,
+    height: 56,
+    borderRadius: 14,
+    backgroundColor: "rgba(30, 41, 59, 0.9)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.12)",
+    gap: 8,
   },
-  nextStepButtonText: {
+  navActionButtonEnd: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    height: 56,
+    borderRadius: 14,
+    backgroundColor: "#DC2626",
+    gap: 8,
+  },
+  navActionButtonText: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  // Arrived Card Styles
+  arrivedCard: {
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+    gap: 10,
+  },
+  arrivedTitle: {
+    color: "#FFFFFF",
+    fontSize: 22,
+    fontWeight: "800",
+  },
+  arrivedSubtitle: {
+    color: "#94A3B8",
+    fontSize: 15,
+    textAlign: "center",
+  },
+  finishNavButton: {
+    width: "100%",
+    height: 56,
+    backgroundColor: "#005CE6",
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 10,
+  },
+  finishNavButtonText: {
     color: "#FFFFFF",
     fontSize: 16,
     fontWeight: "800",
   },
-  repeatStepButton: {
+  // Route Setup Styles
+  setupScrollView: {
     flex: 1,
+  },
+  setupScrollContent: {
+    padding: 16,
+    gap: 12,
+  },
+  searchContainer: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    gap: 4,
-    backgroundColor: Colors.surface,
-    borderWidth: 1.5,
-    borderColor: Colors.border,
-    paddingVertical: 14,
-    borderRadius: 12,
-    minHeight: 52,
+    height: 56,
+    backgroundColor: "rgba(15, 23, 42, 0.75)",
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.1)",
+    gap: 10,
   },
-  repeatStepButtonText: {
-    color: Colors.textPrimary,
-    fontSize: 13,
-    fontWeight: "800",
-  },
-  cancelNavButton: {
+  searchInput: {
     flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 4,
-    backgroundColor: Colors.surface,
-    borderWidth: 1.5,
-    borderColor: Colors.error,
-    paddingVertical: 14,
-    borderRadius: 12,
-    minHeight: 52,
-  },
-  cancelNavButtonText: {
-    color: Colors.error,
-    fontSize: 13,
-    fontWeight: "800",
-  },
-  allStepsTitle: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: Colors.textMuted,
-    textTransform: "uppercase",
-    marginBottom: 10,
-  },
-  stepOverviewItem: {
-    backgroundColor: Colors.backgroundAlt,
-    padding: 10,
-    borderRadius: 8,
-    marginBottom: 6,
-    borderLeftWidth: 3,
-    borderLeftColor: Colors.border,
-  },
-  stepOverviewItemCurrent: {
-    borderLeftColor: Colors.primary,
-    backgroundColor: Colors.primaryLight,
-  },
-  stepOverviewNumber: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: Colors.textPrimary,
-    marginBottom: 2,
-  },
-  stepOverviewInstruction: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-  },
-  completedCard: {
-    alignItems: "center",
-    padding: 24,
-  },
-  completedTitle: {
-    fontSize: 22,
-    fontWeight: "900",
-    color: Colors.textPrimary,
-    marginTop: 12,
-    marginBottom: 4,
-  },
-  completedSubtitle: {
-    fontSize: 15,
-    color: Colors.textSecondary,
-    marginBottom: 20,
-    textAlign: "center",
-  },
-  finishRouteButton: {
-    backgroundColor: Colors.primary,
-    paddingVertical: 14,
-    paddingHorizontal: 28,
-    borderRadius: 12,
-  },
-  finishRouteButtonText: {
     color: "#FFFFFF",
     fontSize: 15,
+    fontWeight: "600",
+  },
+  clearSearchButton: {
+    padding: 6,
+  },
+  selectedPoiCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "rgba(5, 223, 114, 0.12)",
+    borderWidth: 1,
+    borderColor: "#05DF72",
+    gap: 12,
+  },
+  selectedPoiInfo: {
+    flex: 1,
+  },
+  selectedPoiTitle: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  selectedPoiDesc: {
+    color: "#A7F3D0",
+    fontSize: 12,
+    marginTop: 2,
+  },
+  stairsToggleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 8,
+  },
+  stairsTextWrap: {
+    flex: 1,
+    marginRight: 12,
+  },
+  stairsTitle: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  stairsSubtitle: {
+    color: "#94A3B8",
+    fontSize: 12,
+  },
+  errorCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(239, 68, 68, 0.15)",
+    padding: 12,
+    borderRadius: 10,
+    gap: 8,
+  },
+  errorCardText: {
+    color: "#FCA5A5",
+    fontSize: 13,
+    flex: 1,
+  },
+  startNavButton: {
+    flexDirection: "row",
+    height: 56,
+    backgroundColor: "#005CE6",
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    elevation: 4,
+  },
+  startNavButtonDisabled: {
+    backgroundColor: "#1E293B",
+  },
+  startNavButtonText: {
+    color: "#FFFFFF",
+    fontSize: 16,
     fontWeight: "800",
+  },
+  poiSectionTitle: {
+    color: "#94A3B8",
+    fontSize: 13,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+    marginTop: 8,
+  },
+  poiItemCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "rgba(15, 23, 42, 0.6)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.06)",
+    gap: 12,
+    minHeight: 56,
+  },
+  poiItemCardSelected: {
+    borderColor: "#05DF72",
+    backgroundColor: "rgba(5, 223, 114, 0.08)",
+  },
+  poiIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  poiItemTextWrap: {
+    flex: 1,
+  },
+  poiItemTitle: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  poiItemTitleSelected: {
+    color: "#05DF72",
+  },
+  poiItemSubtitle: {
+    color: "#94A3B8",
+    fontSize: 12,
+    marginTop: 2,
   },
 });

@@ -23,6 +23,7 @@ import { TimetableScreen } from "./src/screens/TimetableScreen";
 import { CampusNavigationScreen } from "./src/screens/CampusNavigationScreen";
 import { VoiceAssistantScreen } from "./src/screens/VoiceAssistantScreen";
 import { SettingsScreen } from "./src/screens/SettingsScreen";
+import { CameraAssistScreen } from "./src/screens/CameraAssistScreen";
 import { globalVoiceService } from "./src/services/globalVoiceService";
 import { GlobalVoiceControl } from "./src/components/GlobalVoiceControl";
 
@@ -33,7 +34,8 @@ export type AppScreen =
   | "timetable"
   | "navigation"
   | "voice"
-  | "settings";
+  | "settings"
+  | "assist";
 
 const ONBOARDING_KEY = "@saarthi_onboarding_played";
 
@@ -189,6 +191,9 @@ export function SaarthiApp() {
         setReaderMode(mode || "auto");
         handleNavigate("reader");
       },
+      onNavigateToAssist: () => {
+        handleNavigate("assist");
+      },
       onNavigateToNavigation: (dest) => {
         setNavDestinationQuery(dest || "");
         handleNavigate("navigation");
@@ -261,6 +266,7 @@ export function SaarthiApp() {
           onRegisterScanTrigger={(trigger) => {
             scanTriggerRef.current = trigger;
           }}
+          onOpenLiveAssist={() => handleNavigate("assist")}
         />
       )}
 
@@ -295,6 +301,15 @@ export function SaarthiApp() {
           initialDestinationQuery={navDestinationQuery}
           onNavigateBack={handleGoBack}
           onActiveRouteChanged={setActiveRoute}
+          onOpenLiveAssist={() => handleNavigate("assist")}
+        />
+      )}
+
+      {currentScreen === "assist" && (
+        <CameraAssistScreen
+          onNavigateBack={handleGoBack}
+          permissionResponse={cameraPermission}
+          onRequestPermission={requestCameraPermission}
         />
       )}
 

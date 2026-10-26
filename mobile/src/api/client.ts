@@ -34,6 +34,32 @@ export interface AIVisionResponse {
   extracted_text?: string;
 }
 
+export interface DetectedObject {
+  label: string;
+  relative_position?: string;
+  confidence: number;
+}
+
+export interface DetectedTextItem {
+  text: string;
+  context?: string;
+  confidence: number;
+}
+
+export interface SceneAnalysisResponse {
+  status: string;
+  model: string;
+  spoken_description: string;
+  objects: DetectedObject[];
+  detected_texts: DetectedTextItem[];
+  spatial_description?: string;
+  uncertainties: string[];
+  unchecked_areas: string[];
+  image_quality: string;
+  needs_rescan: boolean;
+  confidence: number;
+}
+
 export interface TimetableItem {
   course_code: string;
   course_name: string;
@@ -312,4 +338,56 @@ export async function readCampusText(
     throw new Error(error.message || "Failed to read campus text.");
   }
 }
+
+/**
+ * Send a camera frame to the backend Live Scene Assist endpoint (/api/v1/ai/scene-assist).
+ */
+export async function analyzeSceneAssist(
+  imageBase64: string,
+  query?: string,
+  mimeType: string = "image/jpeg",
+  signal?: AbortSignal
+): Promise<SceneAnalysisResponse> {
+  const baseUrl = getBackendBaseUrl();
+  const url = `${baseUrl}/api/v1/ai/scene-assist`;
+
+  const payload: {
+    image_base64: string;
+    query?: string;
+    mime_type: string;
+  } = {
+    image_base64: imageBase64,
+    mime_type: mimeType,
+  };
+
+  if (query && query.trim()) {
+    payload.query = query.trim();
+  }
+
+  try {
+    const response = await fetchWithTimeout(
+      url,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+      20000,
+      signal
+    );
+
+    const data = await response.json();
+    if (!response.ok) {
+      const detail = data?.detail || `HTTP ${response.status}`;
+      throw new Error(detail);
+    }
+
+    return data as SceneAnalysisResponse;
+  } catch (error: any) {
+    if (error.name === "AbortError") {
+      throw error;
+    }
+    throw new Error(error.message || "Failed to analyze scene with Gemma 4.");
+  }
+}
+
 

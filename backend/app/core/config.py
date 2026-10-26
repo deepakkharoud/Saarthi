@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-3.5-flash-lite"
     ENABLE_AI_MOCK: bool = False
 
+    # Valhalla Open-Source Routing Engine configuration
+    VALHALLA_API_URL: str = "https://valhalla1.openstreetmap.de/route"
+    VALHALLA_TIMEOUT_SECONDS: float = 12.0
+
     @property
     def is_gemini_configured(self) -> bool:
         """Check if a non-empty Gemini API key is configured."""

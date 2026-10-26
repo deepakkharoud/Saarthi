@@ -148,6 +148,22 @@ export const SCREEN_REGISTRY: Record<AppScreen, ScreenRegistryEntry> = {
     whatCanIDo:
       "You can test the server connection, configure the backend server address, toggle voice speech on or off, replay the spoken welcome tutorial, or return home.",
   },
+
+  assist: {
+    screen: "assist",
+    screenName: "Live Camera Assist",
+    purpose: "Real-time camera preview with Gemma 4 vision scene analysis and obstacle awareness.",
+    availableActions: [
+      "Say 'Describe what is ahead' or tap Describe Now to inspect your surroundings",
+      "Say 'Stop' to cut off speech or stop analysis immediately",
+      "Pause or resume continuous streaming",
+      "Return to the Home screen or Campus Map",
+    ],
+    whereAmI:
+      "You are on the Live Camera Assist screen. Camera preview is streaming to Gemma 4.",
+    whatCanIDo:
+      "You can tap Describe Now or say 'What is ahead' to inspect what is in front of you, toggle live streaming, say 'Stop' to silence audio, or return home.",
+  },
 };
 
 /**
