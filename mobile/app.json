@@ -51,7 +51,8 @@
           "microphonePermission": "Allow SAARTHI to access your microphone to ask questions about your surroundings.",
           "speechRecognitionPermission": "Allow SAARTHI to recognize your speech to answer questions about what you see.",
           "androidSpeechServicePackages": [
-            "com.google.android.googlequicksearchbox"
+            "com.google.android.googlequicksearchbox",
+            "com.google.android.as"
           ]
         }
       ],

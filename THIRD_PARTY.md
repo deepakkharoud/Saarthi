@@ -24,7 +24,7 @@ This document tracks all external code, libraries, and assets used in the **Saar
 | `pytest` | MIT | Automated test framework |
 | `httpx` | BSD-3-Clause | Async HTTP client for integration test execution |
 
-### Mobile Client (React Native / Expo SDK 57)
+### Mobile Client (React Native / Expo SDK 58)
 | Package | License | Purpose |
 | :--- | :--- | :--- |
 | `expo` | MIT | Core Expo SDK runtime |
@@ -32,6 +32,7 @@ This document tracks all external code, libraries, and assets used in the **Saar
 | `expo-camera` | MIT | Native camera view and frame capture |
 | `expo-speech` | MIT | Native Text-to-Speech (TTS) for audible responses |
 | `expo-speech-recognition` | MIT | Real-time on-device voice input transcription |
+| `react-native-voice-activator` | MIT | iOS native on-device wake-word detection and microphone lifecycle; wraps sherpa-onnx |
 | `expo-haptics` | MIT | Tactile feedback patterns for corner navigation and buttons |
 | `@react-native-async-storage/async-storage` | MIT | On-device persistent key-value storage |
 | `react-native-safe-area-context` | MIT | Dynamic safe area handling for notch/island |
@@ -40,6 +41,10 @@ This document tracks all external code, libraries, and assets used in the **Saar
 | `expo-location` | MIT | Real-time GPS location tracking and accuracy reporting |
 | `@maplibre/maplibre-react-native` | MIT | Interactive vector/raster campus mapping with OpenStreetMap tiles |
 | `jest` / `ts-jest` | MIT | Unit testing suite for deterministic application logic |
+
+#### Wake-word runtime assets
+
+`react-native-voice-activator` redistributes sherpa-onnx (Apache-2.0) and downloads the sherpa-onnx GigaSpeech keyword-spotting model on first setup (published as Apache-2.0). The package's own [`THIRD-PARTY-NOTICES.md`](https://github.com/prompt-agency/react-native-voice-activator/blob/main/THIRD-PARTY-NOTICES.md) records that GigaSpeech's training-data terms and the model's redistributability have an unanswered upstream clarification. Saarthi does not copy model files into this repository; the app downloads and checksum-verifies them at runtime. Reassess the model asset before commercial distribution.
 
 
 ---

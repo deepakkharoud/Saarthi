@@ -6,6 +6,13 @@ SAARTHI is an AI navigation and reading assistant engineered for blind and low-v
 3. **Campus Map & Accessible Routing**: Dijkstra shortest path router with an **avoid-stairs** option that refuses to invent accessible routes when only stairs exist.
 4. **4-Corner Tactile UI**: Four large inset corner controls with distinct haptic patterns (`expo-haptics`) designed to eliminate iOS/Android edge-gesture conflicts.
 5. **Fail-Safe & Audible**: Every failure speaks an immediate recovery message. Never claims "the path is clear".
+6. **Hey Saarthi Wake Word**: On Home, Android uses its installed offline English (India) speech recognizer and matches Latin/Hindi spellings of the wake phrase; iOS uses on-device Sherpa-ONNX keyword spotting. A successful trigger opens the existing voice controls. Standby wake listening is limited to the foreground Home screen.
+
+AI-assisted development note: Codex assisted with the wake-word integration and related documentation; the changes are reviewed and verified in this repository.
+
+### Voice wake setup
+
+On first use, SAARTHI requests microphone permission. Android wake detection requires the device's English (India) offline speech-recognition model to be installed; it listens only while the app is foregrounded on Home, then hands the microphone to the existing voice controls after recognizing “Hey Saarthi” (including Hindi script/transcription variants). iOS uses the bundled Sherpa-ONNX detector. Wake-word standby pauses outside Home and when the app is backgrounded; use the accessible Talk to Saarthi control for manual activation.
 
 ---
 
