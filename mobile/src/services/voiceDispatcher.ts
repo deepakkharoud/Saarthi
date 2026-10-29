@@ -33,7 +33,15 @@ export interface VoiceCommandDispatchContext {
   onStopListening?: () => void;
   onResumeListening?: () => void;
   onExitVoiceMode?: () => void;
+  onMapSearchDestination?: (query: string) => Promise<void> | void;
+  onMapSearchNearby?: (category: string) => Promise<void> | void;
+  onMapStopNavigation?: () => Promise<void> | void;
+  onMapRepeatInstruction?: () => Promise<void> | void;
+  onMapRecenter?: () => Promise<void> | void;
+  onMapWhereAmI?: () => Promise<void> | void;
+  onMapGetStatus?: () => Promise<void> | void;
 }
+
 
 /**
  * Dispatches a recognized or typed voice command using the actual active screen context.
@@ -75,12 +83,67 @@ export async function dispatchVoiceCommand(
       return msg;
     }
 
+    case "stop_navigation": {
+      if (context.onMapStopNavigation) {
+        await context.onMapStopNavigation();
+        return "Navigation stopped.";
+      }
+      const msg = "Campus navigation is not currently active.";
+      await speechService.speak(msg, { force: true });
+      return msg;
+    }
+
+    case "recenter_map": {
+      if (context.onMapRecenter) {
+        await context.onMapRecenter();
+        return "Map recentered.";
+      } else if (context.onNavigateToNavigation) {
+        context.onNavigateToNavigation();
+        const msg = "Opening campus map.";
+        await speechService.speak(msg, { force: true });
+        return msg;
+      }
+      return "Map recenter unavailable.";
+    }
+
+    case "navigation_status": {
+      if (context.onMapGetStatus) {
+        await context.onMapGetStatus();
+        return "Checking route status.";
+      }
+      const msg = "Navigation is not active. Say take me to a destination to begin.";
+      await speechService.speak(msg, { force: true });
+      return msg;
+    }
+
+    case "nearby_places": {
+      const cat = parsed.categoryQuery || "places";
+      if (currentScreen === "navigation" && context.onMapSearchNearby) {
+        await context.onMapSearchNearby(cat);
+        return `Searching nearby ${cat}.`;
+      } else if (context.onNavigateToNavigation) {
+        context.onNavigateToNavigation();
+        if (context.onMapSearchNearby) {
+          await context.onMapSearchNearby(cat);
+        } else {
+          const msg = `Opening campus map to search nearby ${cat}.`;
+          await speechService.speak(msg, { force: true });
+        }
+        return `Searching nearby ${cat}.`;
+      }
+      return `Searching nearby ${cat}.`;
+    }
+
     case "stop": {
       await speechService.stop();
       return "Stopped speaking.";
     }
 
     case "repeat": {
+      if (currentScreen === "navigation" && context.onMapRepeatInstruction) {
+        await context.onMapRepeatInstruction();
+        return "Repeating navigation instruction.";
+      }
       const ok = await speechService.repeatLast();
       if (!ok) {
         const msg = "Nothing to repeat yet.";
@@ -89,6 +152,7 @@ export async function dispatchVoiceCommand(
       }
       return "Replaying last message.";
     }
+
 
     case "scan_now": {
       if (context.isCapturing) {
@@ -177,10 +241,15 @@ export async function dispatchVoiceCommand(
     }
 
     case "where_am_i": {
+      if (currentScreen === "navigation" && context.onMapWhereAmI) {
+        await context.onMapWhereAmI();
+        return "Describing current location.";
+      }
       const response = describeWhereAmI(currentScreen);
       await speechService.speak(response, { force: true });
       return response;
     }
+
 
     case "what_can_i_do": {
       const response = describeWhatCanIDo(currentScreen);
@@ -318,6 +387,15 @@ export async function dispatchVoiceCommand(
 
     case "navigate_to": {
       const dest = parsed.destinationQuery || "";
+      if (currentScreen === "navigation" && context.onMapSearchDestination) {
+        if (!dest) {
+          const promptMsg = "Where would you like to go? You can say a campus building, room, or landmark.";
+          await speechService.speak(promptMsg, { force: true });
+          return promptMsg;
+        }
+        await context.onMapSearchDestination(dest);
+        return `Searching route to ${dest}.`;
+      }
       const spoken = `Searching campus routes to ${dest || "destination"}.`;
       await speechService.speak(spoken, { force: true });
       if (context.onNavigateToNavigation) {
@@ -327,6 +405,7 @@ export async function dispatchVoiceCommand(
       }
       return spoken;
     }
+
 
     case "what_is_ahead": {
       const desc = "Opening Live Camera Assist with Gemma 4 vision.";

@@ -174,13 +174,13 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         <Text style={styles.presetsLabel}>Common Presets:</Text>
         <View style={styles.presetsRow}>
           <Pressable
-            onPress={() => handleApplyPreset("http://192.168.29.201:8000")}
+            onPress={() => handleApplyPreset("http://192.168.1.42:8000")}
             style={styles.presetChip}
             accessible={true}
             accessibilityRole="button"
-            accessibilityLabel="Apply PC LAN IP preset: 192.168.29.201:8000"
+            accessibilityLabel="Apply PC LAN IP preset: 192.168.1.42:8000"
           >
-            <Text style={styles.presetChipText}>PC LAN (192.168.29.201:8000)</Text>
+            <Text style={styles.presetChipText}>PC LAN (192.168.1.42:8000)</Text>
           </Pressable>
 
           <Pressable

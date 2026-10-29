@@ -2,32 +2,59 @@
  * Saarthi Campus Map View.
  *
  * Full-screen interactive map powered by @maplibre/maplibre-react-native.
- * Uses OpenStreetMap-based styles with visible attribution and no private tokens.
+ * Compatible across MapLibre versions (supports both v11 Map & legacy MapView).
+ * Uses a self-contained OpenStreetMap raster style with standard OSM tiles
+ * to guarantee instantaneous rendering without external style-server dependencies.
  *
  * Fallback Resilience:
- * If MapLibre Native is not linked (e.g. headless tests or Expo Go without dev-client),
- * gracefully falls back to an accessible high-contrast tactile vector map canvas without crashing.
+ * If native MapLibre is not linked (e.g. headless tests), gracefully falls back
+ * to an accessible high-contrast tactile vector map canvas without crashing.
  */
 
-import React, { useRef, useEffect, useState, useMemo } from "react";
-import { StyleSheet, View, Text, Pressable, Platform } from "react-native";
+import React, { useRef, useEffect, useState, useMemo, useCallback } from "react";
+import { StyleSheet, View, Text, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { RealGpsLocation } from "../services/locationService";
 import { CampusPoi } from "../data/campusSurveyData";
+import { NearbyPlaceResult } from "../services/mapSearchService";
 import { Colors } from "../theme/colors";
 
 // Import MapLibre safely to support both native and headless/test environments
 let MapLibreGL: any = null;
 try {
-  MapLibreGL = require("@maplibre/maplibre-react-native").default;
-  if (MapLibreGL && MapLibreGL.setAccessToken) {
-    MapLibreGL.setAccessToken(null); // OpenStreetMap requires no proprietary token
+  MapLibreGL = require("@maplibre/maplibre-react-native");
+  if (MapLibreGL && MapLibreGL.default) {
+    MapLibreGL = { ...MapLibreGL.default, ...MapLibreGL };
   }
 } catch {
   MapLibreGL = null;
 }
 
-// OpenStreetMap public vector map style with clear OSM attribution
+// Self-contained OpenStreetMap Raster Style JSON (Zero external style server dependency)
+export const OSM_RASTER_STYLE = {
+  version: 8,
+  sources: {
+    "osm-raster-tiles": {
+      type: "raster",
+      tiles: [
+        "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+      ],
+      tileSize: 256,
+      attribution: "© OpenStreetMap contributors",
+    },
+  },
+  layers: [
+    {
+      id: "osm-raster-layer",
+      type: "raster",
+      source: "osm-raster-tiles",
+      minzoom: 0,
+      maxzoom: 19,
+    },
+  ],
+};
+
+export const OSM_STYLE_JSON = JSON.stringify(OSM_RASTER_STYLE);
 export const OSM_DEMO_STYLE = "https://demotiles.maplibre.org/style.json";
 export const OSM_ATTRIBUTION = "© OpenStreetMap contributors";
 
@@ -39,6 +66,8 @@ export interface CampusMapViewProps {
   onSelectPoi: (poi: CampusPoi) => void;
   isRecenterRequested?: boolean;
   onRecenterComplete?: () => void;
+  nearbyPlaces?: NearbyPlaceResult[];
+  onSelectNearbyPlace?: (place: NearbyPlaceResult) => void;
 }
 
 export const CampusMapView: React.FC<CampusMapViewProps> = ({
@@ -49,37 +78,86 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
   onSelectPoi,
   isRecenterRequested,
   onRecenterComplete,
+  nearbyPlaces = [],
+  onSelectNearbyPlace,
 }) => {
   const cameraRef = useRef<any>(null);
   const [mapError, setMapError] = useState<string | null>(null);
-  const [isNativeMapAvailable, setIsNativeMapAvailable] = useState<boolean>(Boolean(MapLibreGL?.MapView));
+  const [currentZoom, setCurrentZoom] = useState<number>(16.5);
+  const hasAutoCentered = useRef<boolean>(false);
 
-  // Default viewport centered on Chandigarh University campus
+  const MapComponent = MapLibreGL?.Map || MapLibreGL?.MapView;
+  const CameraComponent = MapLibreGL?.Camera;
+  const MarkerComponent = MapLibreGL?.Marker || MapLibreGL?.PointAnnotation;
+  const GeoJSONSourceComponent = MapLibreGL?.GeoJSONSource || MapLibreGL?.ShapeSource;
+  const LayerComponent = MapLibreGL?.Layer || MapLibreGL?.LineLayer;
+
+  const isNativeMapAvailable = Boolean(MapComponent && CameraComponent);
+
+  // Default initial coordinate: user GPS location if available, otherwise campus center
   const initialCenterCoordinate = useMemo<[number, number]>(() => {
-    return [76.57505, 30.76864]; // [lon, lat] for MapLibre
+    if (currentLocation && !currentLocation.isStale) {
+      return [currentLocation.longitude, currentLocation.latitude];
+    }
+    return [76.57505, 30.76864]; // [lon, lat]
   }, []);
 
-  // Recenter camera when requested or when user location first locks
+  // Center camera automatically when first live GPS fix locks
+  useEffect(() => {
+    if (currentLocation && !currentLocation.isStale && !hasAutoCentered.current && cameraRef.current) {
+      hasAutoCentered.current = true;
+      const targetCoord = [currentLocation.longitude, currentLocation.latitude];
+      if (typeof cameraRef.current.easeTo === "function") {
+        cameraRef.current.easeTo({ center: targetCoord, zoom: 17, duration: 800 });
+      } else if (typeof cameraRef.current.setCamera === "function") {
+        cameraRef.current.setCamera({ centerCoordinate: targetCoord, zoomLevel: 17, animationDuration: 800 });
+      }
+    }
+  }, [currentLocation]);
+
+  // Recenter camera when explicitly requested by user button or voice
   useEffect(() => {
     if (isRecenterRequested && cameraRef.current) {
-      if (currentLocation && !currentLocation.isStale) {
-        cameraRef.current.setCamera({
-          centerCoordinate: [currentLocation.longitude, currentLocation.latitude],
-          zoomLevel: 17,
-          animationDuration: 800,
-        });
-      } else {
-        cameraRef.current.setCamera({
-          centerCoordinate: initialCenterCoordinate,
-          zoomLevel: 16,
-          animationDuration: 800,
-        });
+      const targetCoord =
+        currentLocation && !currentLocation.isStale
+          ? [currentLocation.longitude, currentLocation.latitude]
+          : initialCenterCoordinate;
+
+      if (typeof cameraRef.current.easeTo === "function") {
+        cameraRef.current.easeTo({ center: targetCoord, zoom: 17.5, duration: 800 });
+      } else if (typeof cameraRef.current.setCamera === "function") {
+        cameraRef.current.setCamera({ centerCoordinate: targetCoord, zoomLevel: 17.5, animationDuration: 800 });
       }
       onRecenterComplete?.();
     }
   }, [isRecenterRequested, currentLocation, initialCenterCoordinate, onRecenterComplete]);
 
-  // Convert route coordinates to GeoJSON LineString for MapLibre
+  // Zoom In / Out handlers
+  const handleZoomIn = useCallback(() => {
+    if (cameraRef.current) {
+      const nextZoom = Math.min(currentZoom + 1, 19);
+      setCurrentZoom(nextZoom);
+      if (typeof cameraRef.current.easeTo === "function") {
+        cameraRef.current.easeTo({ zoom: nextZoom, duration: 300 });
+      } else if (typeof cameraRef.current.zoomTo === "function") {
+        cameraRef.current.zoomTo(nextZoom, 300);
+      }
+    }
+  }, [currentZoom]);
+
+  const handleZoomOut = useCallback(() => {
+    if (cameraRef.current) {
+      const nextZoom = Math.max(currentZoom - 1, 12);
+      setCurrentZoom(nextZoom);
+      if (typeof cameraRef.current.easeTo === "function") {
+        cameraRef.current.easeTo({ zoom: nextZoom, duration: 300 });
+      } else if (typeof cameraRef.current.zoomTo === "function") {
+        cameraRef.current.zoomTo(nextZoom, 300);
+      }
+    }
+  }, [currentZoom]);
+
+  // Convert route coordinates to GeoJSON LineString
   const routeFeature = useMemo<any>(() => {
     if (!routeCoordinates || routeCoordinates.length < 2) return null;
     return {
@@ -87,13 +165,13 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
       properties: {},
       geometry: {
         type: "LineString",
-        coordinates: routeCoordinates.map(([lat, lon]) => [lon, lat]), // [lon, lat]
+        coordinates: routeCoordinates.map(([lat, lon]) => [lon, lat]),
       },
     };
   }, [routeCoordinates]);
 
   // If MapLibre Native module failed or is unavailable, render accessible fallback canvas
-  if (!isNativeMapAvailable || mapError || !MapLibreGL) {
+  if (!isNativeMapAvailable || mapError || !MapComponent) {
     return (
       <View style={styles.container} accessible={true} accessibilityLabel="Campus Map Overview">
         <View style={styles.fallbackHeader}>
@@ -136,84 +214,147 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
     );
   }
 
-  // Render Full MapLibre Interactive Native Map
-  const { MapView, Camera, ShapeSource, LineLayer, PointAnnotation } = MapLibreGL;
-
   return (
     <View style={styles.container} accessible={false}>
-      <MapView
+      <MapComponent
         style={styles.map}
-        styleURL={OSM_DEMO_STYLE}
+        mapStyle={OSM_STYLE_JSON}
+        styleJSON={OSM_STYLE_JSON}
         logoEnabled={false}
         attributionEnabled={false}
+        compassEnabled={true}
         onDidFailLoadingMap={(err: any) => {
-          setMapError("Map style loading error. Campus routing remains active.");
+          console.warn("Map style load failure:", err);
+          setMapError("Map style loading error.");
         }}
       >
-        <Camera
+        <CameraComponent
           ref={cameraRef}
+          initialViewState={{
+            center: initialCenterCoordinate,
+            zoom: 16.5,
+          }}
           defaultSettings={{
             centerCoordinate: initialCenterCoordinate,
-            zoomLevel: 16,
+            zoomLevel: 16.5,
           }}
         />
 
         {/* 1. Walking Route Polyline Layer */}
-        {routeFeature && (
-          <ShapeSource id="campusWalkingRouteSource" shape={routeFeature}>
-            <LineLayer
+        {routeFeature && GeoJSONSourceComponent && LayerComponent && (
+          <GeoJSONSourceComponent id="campusWalkingRouteSource" shape={routeFeature} data={routeFeature}>
+            <LayerComponent
               id="campusWalkingRouteLayer"
+              type="line"
               style={{
-                lineColor: "#38BDF8", // Luminous high-contrast cyan blue
+                lineColor: "#0284C7",
                 lineWidth: 6,
                 lineCap: "round",
                 lineJoin: "round",
               }}
             />
-          </ShapeSource>
+          </GeoJSONSourceComponent>
         )}
 
-        {/* 2. Destination Markers */}
-        {destinations.map((poi) => {
-          const isSelected = selectedDestination?.id === poi.id;
-          return (
-            <PointAnnotation
-              key={poi.id}
-              id={`poi_${poi.id}`}
-              coordinate={[poi.longitude, poi.latitude]}
-              onSelected={() => onSelectPoi(poi)}
-            >
-              <View
-                style={[
-                  styles.markerPin,
-                  isSelected && styles.markerPinSelected,
-                  { backgroundColor: isSelected ? "#05DF72" : "#7525E6" },
-                ]}
-                accessible={true}
-                accessibilityRole="button"
-                accessibilityLabel={`${poi.name}, ${poi.category}`}
+        {/* 2. Destination Markers (Campus POIs) */}
+        {MarkerComponent &&
+          destinations.map((poi) => {
+            const isSelected = selectedDestination?.id === poi.id;
+            return (
+              <MarkerComponent
+                key={poi.id}
+                id={`poi_${poi.id}`}
+                coordinate={[poi.longitude, poi.latitude]}
+                onPress={() => onSelectPoi(poi)}
+                onSelected={() => onSelectPoi(poi)}
               >
-                <Ionicons
-                  name={
-                    poi.category === "entrance"
-                      ? "log-in"
-                      : poi.category === "hostel"
-                      ? "home"
-                      : poi.category === "dining"
-                      ? "restaurant"
-                      : "business"
-                  }
-                  size={14}
-                  color="#FFFFFF"
-                />
-              </View>
-            </PointAnnotation>
-          );
-        })}
+                <View
+                  style={[
+                    styles.markerPin,
+                    isSelected && styles.markerPinSelected,
+                    { backgroundColor: isSelected ? "#05DF72" : "#7525E6" },
+                  ]}
+                  accessible={true}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${poi.name}, ${poi.category}`}
+                >
+                  <Ionicons
+                    name={
+                      poi.category === "entrance"
+                        ? "log-in"
+                        : poi.category === "hostel"
+                        ? "home"
+                        : poi.category === "dining"
+                        ? "restaurant"
+                        : "business"
+                    }
+                    size={14}
+                    color="#FFFFFF"
+                  />
+                </View>
+              </MarkerComponent>
+            );
+          })}
 
-        {/* 3. Live Phone GPS Location Marker */}
-        {currentLocation && !currentLocation.isStale && (
-          <PointAnnotation
+        {/* 3. Nearby Amenities Markers (Hospitals, Food, ATMs, etc.) */}
+        {MarkerComponent &&
+          nearbyPlaces.map((place) => {
+            const isSelected = selectedDestination?.id === place.id;
+            return (
+              <MarkerComponent
+                key={`nearby_${place.id}`}
+                id={`nearby_${place.id}`}
+                coordinate={[place.longitude, place.latitude]}
+                onPress={() => onSelectNearbyPlace?.(place)}
+                onSelected={() => onSelectNearbyPlace?.(place)}
+              >
+                <View
+                  style={[
+                    styles.nearbyPin,
+                    isSelected && styles.markerPinSelected,
+                    { backgroundColor: isSelected ? "#05DF72" : "#DC2626" },
+                  ]}
+                  accessible={true}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${place.name}, ${place.category}, ${Math.round(place.distanceMeters)}m away`}
+                >
+                  <Ionicons
+                    name={
+                      place.category.includes("hospital") || place.category.includes("pharmacy")
+                        ? "medical"
+                        : place.category.includes("food") || place.category.includes("restaurant")
+                        ? "restaurant"
+                        : place.category.includes("atm") || place.category.includes("bank")
+                        ? "cash"
+                        : place.category.includes("bus") || place.category.includes("station")
+                        ? "bus"
+                        : "location"
+                    }
+                    size={13}
+                    color="#FFFFFF"
+                  />
+                </View>
+              </MarkerComponent>
+            );
+          })}
+
+        {/* 4. Selected Destination Pin */}
+        {MarkerComponent &&
+          selectedDestination &&
+          !destinations.some((d) => d.id === selectedDestination.id) && (
+            <MarkerComponent
+              id="selectedDestMarker"
+              coordinate={[selectedDestination.longitude, selectedDestination.latitude]}
+            >
+              <View style={styles.selectedDestPin}>
+                <Ionicons name="flag" size={16} color="#FFFFFF" />
+              </View>
+            </MarkerComponent>
+          )}
+
+        {/* 5. Live Phone GPS Location Marker with Accuracy Halo */}
+        {MarkerComponent && currentLocation && !currentLocation.isStale && (
+          <MarkerComponent
             id="userGpsLocation"
             coordinate={[currentLocation.longitude, currentLocation.latitude]}
           >
@@ -221,9 +362,33 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
               <View style={styles.userLocationPulse} />
               <View style={styles.userLocationInner} />
             </View>
-          </PointAnnotation>
+          </MarkerComponent>
         )}
-      </MapView>
+      </MapComponent>
+
+      {/* Map Zoom Controls (+ / -) */}
+      <View style={styles.zoomControlsWrapper} pointerEvents="box-none">
+        <Pressable
+          onPress={handleZoomIn}
+          accessible={true}
+          accessibilityRole="button"
+          accessibilityLabel="Zoom In"
+          accessibilityHint="Enlarges the map view"
+          style={styles.zoomButton}
+        >
+          <Ionicons name="add" size={24} color="#FFFFFF" />
+        </Pressable>
+        <Pressable
+          onPress={handleZoomOut}
+          accessible={true}
+          accessibilityRole="button"
+          accessibilityLabel="Zoom Out"
+          accessibilityHint="Expands the map view area"
+          style={styles.zoomButton}
+        >
+          <Ionicons name="remove" size={24} color="#FFFFFF" />
+        </Pressable>
+      </View>
 
       {/* Visible OpenStreetMap Attribution Bar */}
       <View style={styles.attributionBadge} accessible={true} accessibilityLabel={`Map data: ${OSM_ATTRIBUTION}`}>
@@ -256,42 +421,85 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 3,
   },
+  nearbyPin: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
+    borderColor: "#FFFFFF",
+    elevation: 4,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+  },
   markerPinSelected: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     borderWidth: 3,
-    borderColor: "#FACC15",
-    transform: [{ scale: 1.15 }],
+    borderColor: "#FFFFFF",
+  },
+  selectedDestPin: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#05DF72",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2.5,
+    borderColor: "#FFFFFF",
+    elevation: 6,
   },
   userLocationOuter: {
-    width: 28,
-    height: 28,
+    width: 32,
+    height: 32,
     alignItems: "center",
     justifyContent: "center",
   },
   userLocationPulse: {
     position: "absolute",
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     backgroundColor: "rgba(56, 189, 248, 0.35)",
+    borderWidth: 1.5,
+    borderColor: "#38BDF8",
   },
   userLocationInner: {
     width: 14,
     height: 14,
     borderRadius: 7,
-    backgroundColor: "#38BDF8",
+    backgroundColor: "#0284C7",
     borderWidth: 2.5,
     borderColor: "#FFFFFF",
   },
+  zoomControlsWrapper: {
+    position: "absolute",
+    right: 14,
+    bottom: 38,
+    gap: 8,
+  },
+  zoomButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "rgba(15, 23, 42, 0.85)",
+    borderWidth: 1.5,
+    borderColor: "#334155",
+    alignItems: "center",
+    justifyContent: "center",
+    elevation: 4,
+  },
   attributionBadge: {
     position: "absolute",
-    bottom: 6,
-    right: 8,
-    backgroundColor: "rgba(15, 23, 42, 0.75)",
-    paddingVertical: 2,
-    paddingHorizontal: 6,
+    bottom: 4,
+    left: 8,
+    backgroundColor: "rgba(3, 7, 18, 0.75)",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
     borderRadius: 6,
   },
   attributionBadgeText: {
@@ -299,15 +507,14 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: "500",
   },
-  // Fallback View Styles
   fallbackHeader: {
     flexDirection: "row",
     alignItems: "center",
     padding: 12,
-    backgroundColor: "rgba(15, 23, 42, 0.8)",
     gap: 8,
+    backgroundColor: "#0F172A",
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(255, 255, 255, 0.08)",
+    borderBottomColor: "#1E293B",
   },
   fallbackTitle: {
     color: "#FFFFFF",
@@ -317,20 +524,20 @@ const styles = StyleSheet.create({
   fallbackCard: {
     margin: 12,
     padding: 14,
+    backgroundColor: "#0F172A",
     borderRadius: 12,
-    backgroundColor: "rgba(15, 23, 42, 0.6)",
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.08)",
+    borderColor: "#1E293B",
   },
   fallbackSubtitle: {
     color: "#E2E8F0",
     fontSize: 13,
     lineHeight: 18,
-    marginBottom: 6,
   },
   osmAttributionText: {
     color: "#64748B",
     fontSize: 11,
+    marginTop: 6,
   },
   selectedPoiBanner: {
     flexDirection: "row",
@@ -338,14 +545,14 @@ const styles = StyleSheet.create({
     marginHorizontal: 12,
     marginBottom: 8,
     padding: 10,
-    borderRadius: 10,
-    backgroundColor: "rgba(5, 223, 114, 0.12)",
+    backgroundColor: "#064E3B",
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: "#05DF72",
     gap: 8,
   },
   selectedPoiText: {
-    color: "#FFFFFF",
+    color: "#ECFDF5",
     fontSize: 13,
     fontWeight: "600",
     flex: 1,
@@ -354,16 +561,18 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     marginHorizontal: 12,
+    marginBottom: 8,
     padding: 10,
-    borderRadius: 10,
-    backgroundColor: "rgba(56, 189, 248, 0.12)",
+    backgroundColor: "#0C4A6E",
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: "#38BDF8",
     gap: 8,
   },
   routeNoticeText: {
-    color: "#E2E8F0",
+    color: "#F0F9FF",
     fontSize: 13,
+    fontWeight: "500",
     flex: 1,
   },
   attributionFooter: {

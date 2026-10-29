@@ -28,6 +28,10 @@ export type VoiceIntentType =
   | "what_can_i_do"
   | "next_class"
   | "navigate_to"
+  | "stop_navigation"
+  | "recenter_map"
+  | "nearby_places"
+  | "navigation_status"
   | NavigationIntentType
   | "go_back"
   | "repeat"
@@ -36,6 +40,7 @@ export type VoiceIntentType =
   | "resume_listening"
   | "exit_voice_mode"
   | "unknown";
+
 
 export const SCREEN_INTENT_MAP: Record<NavigationIntentType, AppScreen> = {
   open_home: "home",
@@ -53,9 +58,11 @@ export interface ParsedVoiceCommand {
   rawTranscript: string;
   targetScreen?: AppScreen;
   destinationQuery?: string;
+  categoryQuery?: string;
   readingMode?: "auto" | "timetable" | "sign" | "notice" | "surroundings";
   confidence: number;
 }
+
 
 /**
  * Clean a voice transcript for normalized matching.
@@ -116,6 +123,46 @@ export function parseVoiceCommand(transcript: string): ParsedVoiceCommand {
     return { intent: "resume_listening", rawTranscript: transcript, confidence: 1.0 };
   }
 
+  // 0d. STOP NAVIGATION intent
+  if (
+    cleaned === "stop navigation" ||
+    cleaned === "cancel navigation" ||
+    cleaned === "end navigation" ||
+    cleaned === "quit navigation" ||
+    cleaned === "stop navigating" ||
+    cleaned === "finish navigation"
+  ) {
+    return { intent: "stop_navigation", rawTranscript: transcript, confidence: 1.0 };
+  }
+
+  // 0e. RECENTER MAP intent
+  if (
+    cleaned === "recenter" ||
+    cleaned === "recenter map" ||
+    cleaned === "center map" ||
+    cleaned === "go back to my current location" ||
+    cleaned === "go back to my location" ||
+    cleaned === "back to my location" ||
+    cleaned === "re center" ||
+    cleaned === "re center map"
+  ) {
+    return { intent: "recenter_map", rawTranscript: transcript, confidence: 0.98 };
+  }
+
+  // 0f. NAVIGATION STATUS / DISTANCE REMAINING intent
+  if (
+    cleaned === "how far is my destination" ||
+    cleaned === "how far to destination" ||
+    cleaned === "how far is the destination" ||
+    cleaned === "how far is destination" ||
+    cleaned === "distance remaining" ||
+    cleaned === "how far" ||
+    cleaned === "remaining distance" ||
+    cleaned === "how much further"
+  ) {
+    return { intent: "navigation_status", rawTranscript: transcript, confidence: 0.98 };
+  }
+
   // 1. STOP intent (immediate priority)
   if (
     cleaned === "stop" ||
@@ -131,6 +178,7 @@ export function parseVoiceCommand(transcript: string): ParsedVoiceCommand {
   ) {
     return { intent: "stop", rawTranscript: transcript, confidence: 1.0 };
   }
+
 
   // 2. REPEAT intent
   if (
@@ -275,6 +323,11 @@ export function parseVoiceCommand(transcript: string): ParsedVoiceCommand {
     cleaned === "which room is this" ||
     cleaned === "location" ||
     cleaned === "my location" ||
+    cleaned === "what is that road called" ||
+    cleaned === "what road is that" ||
+    cleaned === "what road is this" ||
+    cleaned === "what is this road" ||
+    cleaned === "where am i right now" ||
     cleaned.includes("where am i") ||
     cleaned.includes("what screen am i on") ||
     cleaned.includes("what screen is this")
@@ -609,6 +662,63 @@ export function parseVoiceCommand(transcript: string): ParsedVoiceCommand {
     return { intent: "next_class", rawTranscript: transcript, confidence: 0.95 };
   }
 
+  // 12b. TAKE ME SOMEWHERE ELSE intent
+  if (
+    cleaned === "take me somewhere else" ||
+    cleaned === "navigate somewhere else" ||
+    cleaned === "go somewhere else" ||
+    cleaned === "choose another destination" ||
+    cleaned === "different destination"
+  ) {
+    return {
+      intent: "navigate_to",
+      rawTranscript: transcript,
+      destinationQuery: "",
+      confidence: 0.95,
+    };
+  }
+
+  // 12c. NEARBY PLACES / SURROUNDINGS AMENITIES intent
+  if (
+    cleaned === "what places are near me" ||
+    cleaned === "what is near me" ||
+    cleaned === "what is around me" ||
+    cleaned === "nearby places" ||
+    cleaned === "places nearby" ||
+    cleaned === "what is nearby"
+  ) {
+    return {
+      intent: "nearby_places",
+      rawTranscript: transcript,
+      categoryQuery: "general",
+      confidence: 0.95,
+    };
+  }
+
+  const nearbyPatterns = [
+    /^find (?:a )?(.+) nearby$/,
+    /^find nearby (.+)$/,
+    /^where is the nearest (.+)$/,
+    /^where is nearest (.+)$/,
+    /^nearest (.+)$/,
+    /^search (?:for )?(.+) nearby$/,
+  ];
+
+  for (const pattern of nearbyPatterns) {
+    const match = cleaned.match(pattern);
+    if (match && match[1]) {
+      const cat = match[1].trim();
+      if (cat.length >= 2) {
+        return {
+          intent: "nearby_places",
+          rawTranscript: transcript,
+          categoryQuery: cat,
+          confidence: 0.95,
+        };
+      }
+    }
+  }
+
   // 13. TAKE ME TO <PLACE> intent (with destination query)
   const navPatterns = [
     /^take me to (?:the )?(.+)$/,
@@ -619,6 +729,7 @@ export function parseVoiceCommand(transcript: string): ParsedVoiceCommand {
     /^guide me to (?:the )?(.+)$/,
     /^find (?:the )?(.+)$/,
   ];
+
 
   for (const pattern of navPatterns) {
     const match = cleaned.match(pattern);

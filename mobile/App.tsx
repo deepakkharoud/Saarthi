@@ -20,7 +20,12 @@ import { HomeScreen } from "./src/screens/HomeScreen";
 import { CampusReaderScreen, ReadingMode } from "./src/screens/CampusReaderScreen";
 import { ReadingResultsScreen } from "./src/screens/ReadingResultsScreen";
 import { TimetableScreen } from "./src/screens/TimetableScreen";
-import { CampusNavigationScreen } from "./src/screens/CampusNavigationScreen";
+import {
+  CampusNavigationScreen,
+  CampusNavigationVoiceActions,
+} from "./src/screens/CampusNavigationScreen";
+
+
 import { VoiceAssistantScreen } from "./src/screens/VoiceAssistantScreen";
 import { SettingsScreen } from "./src/screens/SettingsScreen";
 import { CameraAssistScreen } from "./src/screens/CameraAssistScreen";
@@ -178,6 +183,7 @@ export function SaarthiApp() {
     onSummarize: () => Promise<void>;
     onScanAgain: () => void;
   } | null>(null);
+  const navigationVoiceActionsRef = useRef<CampusNavigationVoiceActions | null>(null);
 
   useEffect(() => {
     globalVoiceService.setDispatchContextProvider(() => ({
@@ -230,6 +236,42 @@ export function SaarthiApp() {
       onExitVoiceMode: () => {
         globalVoiceService.disableVoiceMode(false);
       },
+      // In-Map Voice Navigation Actions
+      onMapSearchDestination: async (dest: string) => {
+        if (navigationVoiceActionsRef.current) {
+          await navigationVoiceActionsRef.current.onSearchDestination(dest);
+        }
+      },
+      onMapSearchNearby: async (category: string) => {
+        if (navigationVoiceActionsRef.current) {
+          await navigationVoiceActionsRef.current.onSearchNearby(category);
+        }
+      },
+      onMapStopNavigation: async () => {
+        if (navigationVoiceActionsRef.current) {
+          await navigationVoiceActionsRef.current.onStopNavigation();
+        }
+      },
+      onMapRepeatInstruction: async () => {
+        if (navigationVoiceActionsRef.current) {
+          await navigationVoiceActionsRef.current.onRepeatInstruction();
+        }
+      },
+      onMapRecenter: async () => {
+        if (navigationVoiceActionsRef.current) {
+          await navigationVoiceActionsRef.current.onRecenter();
+        }
+      },
+      onMapWhereAmI: async () => {
+        if (navigationVoiceActionsRef.current) {
+          await navigationVoiceActionsRef.current.onWhereAmI();
+        }
+      },
+      onMapGetStatus: async () => {
+        if (navigationVoiceActionsRef.current) {
+          await navigationVoiceActionsRef.current.onGetStatus();
+        }
+      },
     }));
   }, [
     currentScreen,
@@ -238,6 +280,7 @@ export function SaarthiApp() {
     handleNavigate,
     handleGoBack,
   ]);
+
 
   return (
     <View style={styles.appContainer}>
@@ -302,8 +345,12 @@ export function SaarthiApp() {
           onNavigateBack={handleGoBack}
           onActiveRouteChanged={setActiveRoute}
           onOpenLiveAssist={() => handleNavigate("assist")}
+          onRegisterNavigationActions={(actions) => {
+            navigationVoiceActionsRef.current = actions;
+          }}
         />
       )}
+
 
       {currentScreen === "assist" && (
         <CameraAssistScreen

@@ -169,12 +169,27 @@ export async function checkBackendHealth(): Promise<HealthResponse> {
   const url = `${baseUrl}/api/v1/health`;
 
   try {
-    const response = await fetchWithTimeout(url);
+    const response = await fetchWithTimeout(url, undefined, 3000);
     if (!response.ok) {
       throw new Error(`Backend returned HTTP status ${response.status}`);
     }
     return (await response.json()) as HealthResponse;
   } catch (error: any) {
+    // If configured baseUrl failed, probe USB reverse (127.0.0.1) and current Wi-Fi LAN (192.168.1.42)
+    const fallbacks = ["http://127.0.0.1:8000", "http://192.168.1.42:8000", "http://localhost:8000"].filter(
+      (fb) => fb !== baseUrl
+    );
+    for (const fb of fallbacks) {
+      try {
+        const fbResp = await fetchWithTimeout(`${fb}/api/v1/health`, undefined, 1500);
+        if (fbResp.ok) {
+          setBackendBaseUrl(fb);
+          return (await fbResp.json()) as HealthResponse;
+        }
+      } catch {
+        // Continue to next fallback
+      }
+    }
     throw new Error(
       error.message || "Failed to connect to SAARTHI backend server."
     );

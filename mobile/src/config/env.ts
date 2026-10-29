@@ -6,7 +6,7 @@
  */
 
 // Default to the computer's LAN IP on port 8000 for physical phone access
-export const DEFAULT_BACKEND_URL = "http://192.168.29.201:8000";
+export const DEFAULT_BACKEND_URL = "http://192.168.1.42:8000";
 
 let currentBackendUrl = DEFAULT_BACKEND_URL;
 
