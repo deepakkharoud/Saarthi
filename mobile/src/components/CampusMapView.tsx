@@ -88,19 +88,54 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
 
   const MapComponent = MapLibreGL?.Map || MapLibreGL?.MapView;
   const CameraComponent = MapLibreGL?.Camera;
-  const MarkerComponent = MapLibreGL?.Marker || MapLibreGL?.PointAnnotation;
+  // MapLibre v11's Marker uses `lngLat`; PointAnnotation is an older API with
+  // a different coordinate contract. Use the installed Marker implementation.
+  const MarkerComponent = MapLibreGL?.Marker;
   const GeoJSONSourceComponent = MapLibreGL?.GeoJSONSource || MapLibreGL?.ShapeSource;
   const LayerComponent = MapLibreGL?.Layer || MapLibreGL?.LineLayer;
 
   const isNativeMapAvailable = Boolean(MapComponent && CameraComponent);
 
-  // Default initial coordinate: user GPS location if available, otherwise campus center
+  // Default initial coordinate: user GPS location if available, otherwise selected destination or regional center
   const initialCenterCoordinate = useMemo<[number, number]>(() => {
     if (currentLocation && !currentLocation.isStale) {
       return [currentLocation.longitude, currentLocation.latitude];
     }
-    return [76.57505, 30.76864]; // [lon, lat]
-  }, []);
+    if (selectedDestination) {
+      return [selectedDestination.longitude, selectedDestination.latitude];
+    }
+    return [76.57505, 30.76864]; // default initial center if no GPS/destination yet
+  }, [currentLocation, selectedDestination]);
+
+  // Auto-frame route when a new route polyline is plotted
+  useEffect(() => {
+    if (routeCoordinates && routeCoordinates.length >= 2 && cameraRef.current) {
+      let minLat = routeCoordinates[0][0];
+      let maxLat = routeCoordinates[0][0];
+      let minLon = routeCoordinates[0][1];
+      let maxLon = routeCoordinates[0][1];
+
+      for (let i = 1; i < routeCoordinates.length; i++) {
+        const [lat, lon] = routeCoordinates[i];
+        if (lat < minLat) minLat = lat;
+        if (lat > maxLat) maxLat = lat;
+        if (lon < minLon) minLon = lon;
+        if (lon > maxLon) maxLon = lon;
+      }
+
+      const ne = [maxLon, maxLat];
+      const sw = [minLon, minLat];
+
+      if (typeof cameraRef.current.fitBounds === "function") {
+        cameraRef.current.fitBounds(ne, sw, [80, 40, 180, 40], 800);
+      } else if (typeof cameraRef.current.setCamera === "function") {
+        cameraRef.current.setCamera({
+          bounds: { ne, sw, paddingTop: 80, paddingRight: 40, paddingBottom: 180, paddingLeft: 40 },
+          animationDuration: 800,
+        });
+      }
+    }
+  }, [routeCoordinates]);
 
   // Center camera automatically when first live GPS fix locks
   useEffect(() => {
@@ -176,7 +211,7 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
       <View style={styles.container} accessible={true} accessibilityLabel="Campus Map Overview">
         <View style={styles.fallbackHeader}>
           <Ionicons name="map-outline" size={20} color={Colors.primary} />
-          <Text style={styles.fallbackTitle}>Chandigarh University Campus Overview</Text>
+          <Text style={styles.fallbackTitle}>Accessible Pedestrian Navigation</Text>
         </View>
 
         {/* Tactile landmark list overview */}
@@ -264,7 +299,7 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
               <MarkerComponent
                 key={poi.id}
                 id={`poi_${poi.id}`}
-                coordinate={[poi.longitude, poi.latitude]}
+                lngLat={[poi.longitude, poi.latitude]}
                 onPress={() => onSelectPoi(poi)}
                 onSelected={() => onSelectPoi(poi)}
               >
@@ -296,6 +331,29 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
             );
           })}
 
+        {/* 2b. Explicit Selected Destination Pin (for general non-campus destinations) */}
+        {MarkerComponent &&
+          selectedDestination &&
+          !destinations.some((d) => d.id === selectedDestination.id) &&
+          !nearbyPlaces.some((p) => p.id === selectedDestination.id) && (
+            <MarkerComponent
+              key={`selected_dest_${selectedDestination.id}`}
+              id={`selected_dest_${selectedDestination.id}`}
+              lngLat={[selectedDestination.longitude, selectedDestination.latitude]}
+              onPress={() => onSelectPoi(selectedDestination)}
+              onSelected={() => onSelectPoi(selectedDestination)}
+            >
+              <View
+                style={[styles.markerPin, styles.markerPinSelected, { backgroundColor: "#05DF72" }]}
+                accessible={true}
+                accessibilityRole="button"
+                accessibilityLabel={`Destination Target: ${selectedDestination.name}`}
+              >
+                <Ionicons name="flag" size={14} color="#FFFFFF" />
+              </View>
+            </MarkerComponent>
+          )}
+
         {/* 3. Nearby Amenities Markers (Hospitals, Food, ATMs, etc.) */}
         {MarkerComponent &&
           nearbyPlaces.map((place) => {
@@ -304,7 +362,7 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
               <MarkerComponent
                 key={`nearby_${place.id}`}
                 id={`nearby_${place.id}`}
-                coordinate={[place.longitude, place.latitude]}
+                lngLat={[place.longitude, place.latitude]}
                 onPress={() => onSelectNearbyPlace?.(place)}
                 onSelected={() => onSelectNearbyPlace?.(place)}
               >
@@ -344,7 +402,7 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
           !destinations.some((d) => d.id === selectedDestination.id) && (
             <MarkerComponent
               id="selectedDestMarker"
-              coordinate={[selectedDestination.longitude, selectedDestination.latitude]}
+              lngLat={[selectedDestination.longitude, selectedDestination.latitude]}
             >
               <View style={styles.selectedDestPin}>
                 <Ionicons name="flag" size={16} color="#FFFFFF" />
@@ -356,7 +414,7 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
         {MarkerComponent && currentLocation && !currentLocation.isStale && (
           <MarkerComponent
             id="userGpsLocation"
-            coordinate={[currentLocation.longitude, currentLocation.latitude]}
+            lngLat={[currentLocation.longitude, currentLocation.latitude]}
           >
             <View style={styles.userLocationOuter}>
               <View style={styles.userLocationPulse} />

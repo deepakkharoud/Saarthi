@@ -320,6 +320,8 @@ describe("PART E — Navigation Progress & Geometric Tracking", () => {
     ],
     spokenSummary: "Route to Block 1 found.",
     destinationName: "Block 1",
+    hasStairs: false,
+    accessibilityStatus: "verified_stair_free",
   };
 
   beforeEach(() => {

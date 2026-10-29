@@ -175,8 +175,8 @@ export async function checkBackendHealth(): Promise<HealthResponse> {
     }
     return (await response.json()) as HealthResponse;
   } catch (error: any) {
-    // If configured baseUrl failed, probe USB reverse (127.0.0.1) and current Wi-Fi LAN (192.168.1.42)
-    const fallbacks = ["http://127.0.0.1:8000", "http://192.168.1.42:8000", "http://localhost:8000"].filter(
+    // If configured baseUrl failed, probe USB reverse and loopback endpoints.
+    const fallbacks = ["http://127.0.0.1:8000", "http://localhost:8000"].filter(
       (fb) => fb !== baseUrl
     );
     for (const fb of fallbacks) {

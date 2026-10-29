@@ -78,6 +78,8 @@ class VoiceRecognitionService {
   private activeSubscription: (() => void) | null = null;
   private isListening: boolean = false;
   private currentSessionId: number = 0;
+  private finalTranscriptTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingFinalTranscript: string = "";
 
   constructor() {
     this.init();
@@ -196,6 +198,8 @@ class VoiceRecognitionService {
       // Clean up previous listeners and assign a new session ID to invalidate pending async events
       this.cancelListening();
       const sessionId = ++this.currentSessionId;
+      let hasStarted = false;
+      this.pendingFinalTranscript = "";
       this.isListening = true;
       console.log(`[SAARTHI Voice Recognition] Starting session #${sessionId}...`);
 
@@ -206,10 +210,33 @@ class VoiceRecognitionService {
           console.log(
             `[SAARTHI Voice Recognition] Session #${sessionId} native 'result' (isFinal=${event.isFinal}, chars=${best?.transcript?.length || 0})`
           );
-          callbacks.onResult?.({
-            transcript: best?.transcript || "",
-            isFinal: event.isFinal === true,
-          });
+          const transcript = (best?.transcript || "").trim();
+          if (event.isFinal === true && transcript) {
+            const previous = this.pendingFinalTranscript.trim();
+            const normalizedPrevious = previous.toLocaleLowerCase();
+            const normalizedIncoming = transcript.toLocaleLowerCase();
+            if (!previous || normalizedIncoming.startsWith(normalizedPrevious)) {
+              this.pendingFinalTranscript = transcript;
+            } else if (!normalizedPrevious.endsWith(normalizedIncoming)) {
+              this.pendingFinalTranscript = `${previous} ${transcript}`.trim();
+            }
+
+            // Let a slower speaker continue after a brief pause. Continuous
+            // recognition can emit a final segment before the full command is done.
+            callbacks.onResult?.({ transcript: this.pendingFinalTranscript, isFinal: false });
+            if (this.finalTranscriptTimer) clearTimeout(this.finalTranscriptTimer);
+            this.finalTranscriptTimer = setTimeout(() => {
+              if (this.currentSessionId !== sessionId) return;
+              const completedTranscript = this.pendingFinalTranscript.trim();
+              this.finalTranscriptTimer = null;
+              this.pendingFinalTranscript = "";
+              if (!completedTranscript) return;
+              this.stopListening();
+              callbacks.onResult?.({ transcript: completedTranscript, isFinal: true });
+            }, 2200);
+          } else {
+            callbacks.onResult?.({ transcript, isFinal: false });
+          }
         }
       });
 
@@ -218,6 +245,15 @@ class VoiceRecognitionService {
         // Ignore "aborted" error fired when intentionally aborting/cancelling
         if (event?.error === "aborted") return;
         console.warn(`[SAARTHI Voice Recognition] Session #${sessionId} native 'error':`, event);
+        if (this.pendingFinalTranscript.trim()) {
+          if (this.finalTranscriptTimer) clearTimeout(this.finalTranscriptTimer);
+          this.finalTranscriptTimer = null;
+          const completedTranscript = this.pendingFinalTranscript.trim();
+          this.pendingFinalTranscript = "";
+          this.stopListening();
+          callbacks.onResult?.({ transcript: completedTranscript, isFinal: true });
+          return;
+        }
         this.isListening = false;
         callbacks.onError?.(
           event?.message || event?.error || "Speech recognition encountered an error."
@@ -226,13 +262,23 @@ class VoiceRecognitionService {
 
       const unsubEnd = this.module.addListener?.("end", () => {
         if (this.currentSessionId !== sessionId) return;
+        // Some Android recognizers emit an end notification during startup,
+        // before their matching start event. Treating that as a real timeout
+        // causes the destination prompt to replay before the mic is ready.
+        if (!hasStarted) {
+          console.log(`[SAARTHI Voice Recognition] Ignoring premature end for session #${sessionId}.`);
+          return;
+        }
         console.log(`[SAARTHI Voice Recognition] Session #${sessionId} native 'end' received.`);
         this.isListening = false;
-        callbacks.onEnd?.();
+        // If speech was recognized, let its short final-result grace period
+        // finish before notifying consumers that the session ended.
+        if (!this.pendingFinalTranscript.trim()) callbacks.onEnd?.();
       });
 
       const unsubStart = this.module.addListener?.("start", () => {
         if (this.currentSessionId !== sessionId) return;
+        hasStarted = true;
         console.log(`[SAARTHI Voice Recognition] Session #${sessionId} native 'start' confirmed. Listening active.`);
         callbacks.onStart?.();
       });
@@ -247,8 +293,14 @@ class VoiceRecognitionService {
       this.module.start({
         lang: "en-US",
         interimResults: true,
-        continuous: false,
-        addsPunctuation: true,
+        // Continuous mode is supported on Android 13+ and allows natural
+        // pauses without finalizing the whole command immediately.
+        continuous: Platform.OS !== "android" || Number(Platform.Version) >= 33,
+        androidIntentOptions: {
+          EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS: 20000,
+          EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS: 12000,
+          EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS: 10000,
+        },
       });
     } catch (err: any) {
       console.warn(`[SAARTHI Voice Recognition] Session start error:`, err);
@@ -298,6 +350,11 @@ class VoiceRecognitionService {
   }
 
   private cleanup(): void {
+    if (this.finalTranscriptTimer) {
+      clearTimeout(this.finalTranscriptTimer);
+      this.finalTranscriptTimer = null;
+    }
+    this.pendingFinalTranscript = "";
     if (this.activeSubscription) {
       try {
         this.activeSubscription();

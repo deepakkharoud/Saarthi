@@ -1,19 +1,19 @@
 /**
- * Saarthi Map Search, Reverse Geocoding, and Nearby Places Service.
+ * Saarthi Map Search & Geocoding Service.
  *
- * Implements grounded, zero-hallucination geocoding and reverse geocoding
- * backed by OpenStreetMap Nominatim and Saarthi backend proxy.
+ * Implements general-purpose, real-world destination search, reverse geocoding,
+ * nearby amenity lookups, and spoken input normalization.
  *
- * Requirements:
- * - Convert GPS coordinates to human-readable street / surroundings description.
- * - Cache reverse-geocoding queries (<25m) to avoid repeat network calls on GPS fluctuations.
- * - Search destinations by voice or typed query (campus POIs + wider geographic search).
- * - Find verified nearby amenities (hospitals, food, ATMs, transit, colleges, petrol pumps).
- * - Truthful spoken output only (never hallucinate distances or non-existent roads).
+ * Designed for general pedestrian navigation:
+ * - Does NOT hardcode Chandigarh University as a mandatory boundary or default destination.
+ * - Searches real addresses, cities, landmarks, hospitals, stations, and shops anywhere via OSM.
+ * - Resolves "nearest hospital" and category queries using actual geodesic distance from user GPS.
+ * - Preserves verified campus survey POIs when the user is actually on campus or searches for a campus block.
+ * - Never hallucinates coordinates or destinations.
  */
 
-import { getBackendBaseUrl } from "../config/env";
 import { CHANDIGARH_UNIVERSITY_POIS, CampusPoi, searchCampusPois } from "../data/campusSurveyData";
+import { getBackendBaseUrl } from "../config/env";
 
 export interface ReverseGeocodeResult {
   displayName: string;
@@ -59,8 +59,236 @@ export type NearbyCategory =
   | "fuel"
   | "pharmacy";
 
+export interface NormalizedDestinationResult {
+  normalizedQuery: string;
+  category?: NearbyCategory | "hostel" | "academic";
+  isCategorySearch: boolean;
+  isNearestSearch: boolean;
+}
+
 /**
- * Calculate geodesic distance between two points using Haversine formula (in meters).
+ * Normalizes a spoken or typed destination query.
+ *
+ * Strips common carrier phrases ("take me to", "navigate to", "where is", "find"),
+ * resolves spoken number words ("block one" -> "block 1"), and detects common
+ * place categories, synonyms, and "nearest" intent.
+ */
+export function normalizeDestinationQuery(raw: string): NormalizedDestinationResult {
+  let cleaned = raw
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/[.,?!:;'"-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Strip common carrier prefixes
+  const carrierPrefixes = [
+    /^take me to (?:the )?/,
+    /^navigate to (?:the )?/,
+    /^directions to (?:the )?/,
+    /^how do i get to (?:the )?/,
+    /^where is (?:the )?/,
+    /^guide me to (?:the )?/,
+    /^search for (?:the )?/,
+    /^search (?:the )?/,
+    /^find (?:the )?/,
+    /^go to (?:the )?/,
+    /^(?:the|a)\s+/,
+  ];
+
+  for (const prefix of carrierPrefixes) {
+    if (prefix.test(cleaned)) {
+      cleaned = cleaned.replace(prefix, "").trim();
+      break;
+    }
+  }
+
+  // Detect "nearest" or "near me" intent
+  let isNearestSearch = false;
+  if (/\b(nearest|closest|nearby|near me|near here)\b/i.test(cleaned)) {
+    isNearestSearch = true;
+    cleaned = cleaned
+      .replace(/\b(nearest|closest|nearby|near me|near here)\b/gi, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  // Normalize speech-recognition number variations
+  cleaned = cleaned
+    .replace(/\bblock one\b/g, "block 1")
+    .replace(/\bblock two\b/g, "block 2")
+    .replace(/\bblock three\b/g, "block 3")
+    .replace(/\bblock four\b/g, "block 4")
+    .replace(/\bblock five\b/g, "block 5")
+    .replace(/\bblock six\b/g, "block 6")
+    .replace(/\bblock seven\b/g, "block 7")
+    .replace(/\bblock eight\b/g, "block 8")
+    .replace(/\bblock nine\b/g, "block 9")
+    .replace(/\bblock ten\b/g, "block 10")
+    .replace(/\bblock a one\b/g, "block a1")
+    .replace(/\bblock a 1\b/g, "block a1")
+    .replace(/\bblock a two\b/g, "block a2")
+    .replace(/\bblock a 2\b/g, "block a2")
+    .replace(/\bblock a three\b/g, "block a3")
+    .replace(/\bblock a 3\b/g, "block a3")
+    .replace(/\bblock b one\b/g, "block b1")
+    .replace(/\bblock b 1\b/g, "block b1")
+    .replace(/\bblock c one\b/g, "block c1")
+    .replace(/\bblock c 1\b/g, "block c1")
+    .replace(/\bblock c three\b/g, "block c3")
+    .replace(/\bblock c 3\b/g, "block c3")
+    .replace(/\bgate one\b/g, "gate 1")
+    .replace(/\bgate two\b/g, "gate 2")
+    .replace(/\btime table\b/g, "timetable")
+    .replace(/\bmedical centre\b/g, "medical center")
+    .replace(/\bhealth centre\b/g, "health center")
+    .replace(/\brailway station\b/g, "station")
+    .replace(/\btrain station\b/g, "station");
+
+  // If query specifies a city or location (e.g. "hospital in ludhiana"), it's not a pure local category search
+  const hasLocationQualifier = /\b(in|at|near)\s+[a-z]+/i.test(cleaned);
+
+  // Determine category
+  let category: NearbyCategory | "hostel" | "academic" | undefined = undefined;
+  let isCategorySearch = false;
+
+  // Medical / Hospital / Clinic
+  if (
+    cleaned === "hospital" ||
+    cleaned === "hospitals" ||
+    cleaned === "clinic" ||
+    cleaned === "clinics" ||
+    cleaned === "medical center" ||
+    cleaned === "medical" ||
+    cleaned === "dispensary" ||
+    cleaned === "health center" ||
+    cleaned === "doctor" ||
+    cleaned === "pharmacy" ||
+    cleaned === "chemist"
+  ) {
+    category = "hospital";
+    isCategorySearch = !hasLocationQualifier;
+  } else if (
+    cleaned.includes("hospital") ||
+    cleaned.includes("clinic") ||
+    cleaned.includes("medical") ||
+    cleaned.includes("dispensary") ||
+    cleaned.includes("pharmacy")
+  ) {
+    category = "hospital";
+  }
+
+  // Food / Dining / Canteen
+  else if (
+    cleaned === "food" ||
+    cleaned === "food court" ||
+    cleaned === "canteen" ||
+    cleaned === "cafeteria" ||
+    cleaned === "restaurant" ||
+    cleaned === "lunch" ||
+    cleaned === "snacks" ||
+    cleaned === "cafe" ||
+    cleaned === "mess" ||
+    cleaned === "dining"
+  ) {
+    category = "food";
+    isCategorySearch = !hasLocationQualifier;
+  } else if (
+    cleaned.includes("food court") ||
+    cleaned.includes("canteen") ||
+    cleaned.includes("cafeteria") ||
+    cleaned.includes("restaurant") ||
+    cleaned.includes("cafe")
+  ) {
+    category = "food";
+  }
+
+  // ATM / Bank
+  else if (
+    cleaned === "atm" ||
+    cleaned === "atms" ||
+    cleaned === "bank" ||
+    cleaned === "cash" ||
+    cleaned === "money" ||
+    cleaned === "state bank" ||
+    cleaned === "sbi"
+  ) {
+    category = "atm";
+    isCategorySearch = !hasLocationQualifier;
+  } else if (cleaned.includes("atm") || cleaned.includes("bank") || cleaned.includes("sbi")) {
+    category = "atm";
+  }
+
+  // Transit / Bus / Train Station
+  else if (
+    cleaned === "bus" ||
+    cleaned === "buses" ||
+    cleaned === "bus stop" ||
+    cleaned === "bus stand" ||
+    cleaned === "transit" ||
+    cleaned === "station" ||
+    cleaned === "metro" ||
+    cleaned === "shuttle" ||
+    cleaned === "bus terminal"
+  ) {
+    category = "transit";
+    isCategorySearch = !hasLocationQualifier;
+  } else if (
+    cleaned.includes("bus") ||
+    cleaned.includes("transit") ||
+    cleaned.includes("station") ||
+    cleaned.includes("shuttle")
+  ) {
+    category = "transit";
+  }
+
+  // Fuel / Petrol
+  else if (
+    cleaned === "fuel" ||
+    cleaned === "petrol" ||
+    cleaned === "petrol pump" ||
+    cleaned === "gas" ||
+    cleaned === "diesel"
+  ) {
+    category = "fuel";
+    isCategorySearch = !hasLocationQualifier;
+  } else if (cleaned.includes("petrol") || cleaned.includes("fuel")) {
+    category = "fuel";
+  }
+
+  // Hostels / Residential
+  else if (cleaned === "hostel" || cleaned === "hostels" || cleaned === "dorm" || cleaned === "dormitory") {
+    category = "hostel";
+    isCategorySearch = !hasLocationQualifier;
+  }
+
+  // Academic / Colleges / University
+  else if (
+    cleaned === "college" ||
+    cleaned === "colleges" ||
+    cleaned === "university" ||
+    cleaned === "school" ||
+    cleaned === "classroom" ||
+    cleaned === "academic block"
+  ) {
+    category = "academic";
+    isCategorySearch = !hasLocationQualifier;
+  }
+
+  if (isNearestSearch) {
+    isCategorySearch = true;
+  }
+
+  return {
+    normalizedQuery: cleaned,
+    category,
+    isCategorySearch,
+    isNearestSearch,
+  };
+}
+
+/**
+ * Great-circle distance between two WGS84 coordinates in meters.
  */
 export function calculateDistanceMeters(
   lat1: number,
@@ -68,46 +296,44 @@ export function calculateDistanceMeters(
   lat2: number,
   lon2: number
 ): number {
-  const R = 6371000; // meters
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const r = 6371000;
+  const toRad = Math.PI / 180;
+  const dLat = (lat2 - lat1) * toRad;
+  const dLon = (lon2 - lon1) * toRad;
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
+    Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return Math.round(R * c);
+  return Math.round(r * c);
 }
 
-class MapSearchService {
+export class MapSearchService {
   private cachedReverseResult: ReverseGeocodeResult | null = null;
-  private readonly CACHE_DISTANCE_THRESHOLD_METERS = 25;
+  private cachedReverseCoord: { lat: number; lon: number } | null = null;
 
   /**
-   * Reverse-geocode coordinates into grounded address and spoken description.
-   * Caches responses within 25m to prevent repeated queries during slight GPS jitter.
+   * Reverse-geocode coordinates into street name, neighborhood, and city.
    */
   public async reverseGeocode(lat: number, lon: number): Promise<ReverseGeocodeResult> {
-    // 1. Check cache
-    if (this.cachedReverseResult) {
+    // 1. Check in-memory cache if requested point is within 15 meters
+    if (this.cachedReverseResult && this.cachedReverseCoord) {
       const dist = calculateDistanceMeters(
         lat,
         lon,
-        this.cachedReverseResult.latitude,
-        this.cachedReverseResult.longitude
+        this.cachedReverseCoord.lat,
+        this.cachedReverseCoord.lon
       );
-      if (dist < this.CACHE_DISTANCE_THRESHOLD_METERS) {
+      if (dist < 15) {
         return this.cachedReverseResult;
       }
     }
 
-    // 2. Try Backend Proxy first
+    // 2. Try Backend Reverse Geocode Endpoint
     try {
-      const backendRes = await this.queryBackendReverseGeocode(lat, lon);
+      const backendRes = await this.queryBackendReverse(lat, lon);
       if (backendRes) {
         this.cachedReverseResult = backendRes;
+        this.cachedReverseCoord = { lat, lon };
         return backendRes;
       }
     } catch {
@@ -117,6 +343,7 @@ class MapSearchService {
     // 3. Fallback to direct Nominatim request
     const directRes = await this.queryDirectNominatimReverse(lat, lon);
     this.cachedReverseResult = directRes;
+    this.cachedReverseCoord = { lat, lon };
     return directRes;
   }
 
@@ -130,64 +357,119 @@ class MapSearchService {
 
   /**
    * Search for destinations matching a typed or spoken query.
-   * Returns a combination of verified campus POIs and real OpenStreetMap geocoded results.
+   *
+   * General-Purpose Pedestrian Architecture:
+   * - Queries OpenStreetMap Nominatim for real cities, addresses, landmarks, and places.
+   * - Queries verified nearby amenities (Hospitals, Food, ATMs, Transit, etc.) based on user GPS.
+   * - Supports "nearest hospital" by sorting by real geodesic distance.
+   * - Includes campus survey POIs only when user is on campus or query specifically targets them.
+   * - Never fabricates fake destinations or coordinates.
    */
   public async searchDestinations(
     query: string,
     userLat?: number,
     userLon?: number
   ): Promise<MapSearchResult[]> {
-    const q = query.trim().toLowerCase();
+    const { normalizedQuery: q, category, isCategorySearch, isNearestSearch } = normalizeDestinationQuery(query);
     if (!q) return [];
 
     const candidates: MapSearchResult[] = [];
     const seenIds = new Set<string>();
 
-    // 1. Match local verified campus survey POIs first
-    const matchedPois = searchCampusPois(q);
-    for (const poi of matchedPois) {
-      const dist =
-        userLat !== undefined && userLon !== undefined
-          ? calculateDistanceMeters(userLat, userLon, poi.latitude, poi.longitude)
-          : undefined;
+    // 1. Campus POI Inclusion Policy:
+    // Only search campus survey POIs if the user is physically near campus (<3km)
+    // OR if the query explicitly mentions a campus building/block/gate/hostel.
+    const isNearCampus =
+      userLat !== undefined &&
+      userLon !== undefined &&
+      calculateDistanceMeters(userLat, userLon, 30.76864, 76.57505) < 3000;
 
-      candidates.push({
-        id: poi.id,
-        name: poi.name,
-        displayName: `${poi.name} (${poi.shortCode}) - ${poi.description}`,
-        latitude: poi.latitude,
-        longitude: poi.longitude,
-        category: poi.category,
-        placeType: "campus_poi",
-        distanceMeters: dist,
-        isCampusPoi: true,
-      });
-      seenIds.add(poi.id);
-    }
+    const isCampusSpecificQuery = /\b(cu|campus|block \d+|gate \d+|sukhna|shivalik|zakir|le corbusier)\b/i.test(q);
 
-    // 2. Query backend geocode endpoint or direct OSM Nominatim for wider geographic search
-    try {
-      const externalResults = await this.queryGeocodeSearch(q, userLat, userLon);
-      for (const item of externalResults) {
-        if (!seenIds.has(item.id)) {
+    if (isCampusSpecificQuery || isNearCampus) {
+      const matchedPois = searchCampusPois(q);
+      for (const poi of matchedPois) {
+        if (!seenIds.has(poi.id)) {
           const dist =
             userLat !== undefined && userLon !== undefined
-              ? calculateDistanceMeters(userLat, userLon, item.latitude, item.longitude)
+              ? calculateDistanceMeters(userLat, userLon, poi.latitude, poi.longitude)
               : undefined;
 
           candidates.push({
-            ...item,
+            id: poi.id,
+            name: poi.name,
+            displayName: `${poi.name} (${poi.shortCode}) - ${poi.description}`,
+            latitude: poi.latitude,
+            longitude: poi.longitude,
+            category: poi.category,
+            placeType: "campus_poi",
             distanceMeters: dist,
-            isCampusPoi: false,
+            isCampusPoi: true,
           });
-          seenIds.add(item.id);
+          seenIds.add(poi.id);
         }
       }
-    } catch {
-      // Keep local POIs if network is unavailable
     }
 
-    // Sort by proximity if user coordinates are known
+    // 2. If it is a category query (e.g. "hospital", "clinic", "pharmacy", "food", "atm", "station")
+    // or an explicit "nearest" request, search real nearby verified amenities:
+    if (category && (isCategorySearch || isNearestSearch || candidates.length === 0)) {
+      if (userLat !== undefined && userLon !== undefined) {
+        try {
+          const nearbyCat =
+            category === "hostel" || category === "academic" ? "college" : (category as NearbyCategory);
+          // Query real amenities within a 15km radius
+          const nearbyResults = await this.searchNearbyPlaces(nearbyCat, userLat, userLon, 15000);
+          for (const place of nearbyResults) {
+            if (!seenIds.has(place.id)) {
+              candidates.push({
+                id: place.id,
+                name: place.name,
+                displayName: place.address || `${place.name} (${place.category})`,
+                latitude: place.latitude,
+                longitude: place.longitude,
+                category: place.category,
+                placeType: "nearby_amenity",
+                distanceMeters: place.distanceMeters,
+                isCampusPoi: false,
+              });
+              seenIds.add(place.id);
+            }
+          }
+        } catch {
+          // Safe isolate
+        }
+      }
+    }
+
+    // 3. General Geographic Geocoding (Cities, addresses, landmarks, stations, buildings)
+    // Run whenever not a pure "near me" category search or when candidates are few
+    if (!isNearestSearch && candidates.length < 5) {
+      try {
+        const externalResults = await this.queryGeocodeSearch(q, userLat, userLon);
+        for (const item of externalResults) {
+          if (!seenIds.has(item.id)) {
+            const dist =
+              userLat !== undefined && userLon !== undefined
+                ? calculateDistanceMeters(userLat, userLon, item.latitude, item.longitude)
+                : undefined;
+
+            candidates.push({
+              ...item,
+              distanceMeters: dist,
+              isCampusPoi: false,
+            });
+            seenIds.add(item.id);
+          }
+        }
+      } catch {
+        // Keep existing results
+      }
+    }
+
+    // 4. Sort Candidates:
+    // If user coordinates are known, sort strictly by real geodesic proximity (closest first).
+    // No artificial preference is given to campus POIs over real-world destinations!
     if (userLat !== undefined && userLon !== undefined) {
       candidates.sort((a, b) => (a.distanceMeters ?? 999999) - (b.distanceMeters ?? 999999));
     }
@@ -202,7 +484,7 @@ class MapSearchService {
     category: NearbyCategory | string,
     userLat: number,
     userLon: number,
-    radiusMeters: number = 3000
+    radiusMeters: number = 5000
   ): Promise<NearbyPlaceResult[]> {
     const catLower = category.toLowerCase();
 
@@ -232,28 +514,28 @@ class MapSearchService {
         }
       }
     } catch {
-      // Fall through to direct Nominatim query
+      // Fall through to direct query
     }
 
-    // 2. Direct Nominatim amenity query
+    // 2. Direct Nominatim Query Fallback
     return await this.queryDirectNominatimNearby(catLower, userLat, userLon, radiusMeters);
   }
 
-  // --- Private Network Helpers ---
-
-  private async queryBackendReverseGeocode(
-    lat: number,
-    lon: number
-  ): Promise<ReverseGeocodeResult | null> {
+  private async queryBackendReverse(lat: number, lon: number): Promise<ReverseGeocodeResult | null> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
+    const timeout = setTimeout(() => controller.abort(), 4000);
 
     try {
-      const url = `${getBackendBaseUrl()}/api/v1/map/reverse-geocode?lat=${lat}&lon=${lon}`;
-      const res = await fetch(url, { signal: controller.signal });
+      const res = await fetch(
+        `${getBackendBaseUrl()}/api/v1/map/reverse-geocode?lat=${lat}&lon=${lon}`,
+        { signal: controller.signal }
+      );
       clearTimeout(timeout);
 
-      if (!res.ok) return null;
+      if (!res.ok) {
+        return null;
+      }
+
       const data = await res.json();
       return {
         displayName: data.display_name,
@@ -307,14 +589,13 @@ class MapSearchService {
         if (road && suburb) {
           spokenParts.push(`You are currently near ${road} in ${suburb}.`);
         } else if (road) {
-
           spokenParts.push(`You are currently on or near ${road}.`);
         } else if (suburb) {
           spokenParts.push(`You are currently in ${suburb}.`);
         } else if (city) {
           spokenParts.push(`You are currently in ${city}.`);
         } else {
-          spokenParts.push("Your GPS location is ready on the campus map.");
+          spokenParts.push("Your GPS location is ready on the map.");
         }
 
         if (landmark) {
@@ -390,9 +671,9 @@ class MapSearchService {
     try {
       let url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(
         query
-      )}&limit=6&addressdetails=1`;
+      )}&limit=10&addressdetails=1`;
       if (userLat !== undefined && userLon !== undefined) {
-        const delta = 0.5;
+        const delta = 0.8;
         url += `&viewbox=${userLon - delta},${userLat + delta},${userLon + delta},${
           userLat - delta
         }&bounded=0`;
@@ -435,18 +716,18 @@ class MapSearchService {
       searchTerm = "restaurant";
     else if (category.includes("atm") || category.includes("bank")) searchTerm = "atm";
     else if (category.includes("bus") || category.includes("transit") || category.includes("station"))
-      searchTerm = "bus stop";
+      searchTerm = "station";
     else if (category.includes("college") || category.includes("university"))
       searchTerm = "college";
     else if (category.includes("fuel") || category.includes("petrol")) searchTerm = "fuel";
     else if (category.includes("pharmacy") || category.includes("chemist")) searchTerm = "pharmacy";
 
-    const delta = radiusMeters / 111000.0;
+    const delta = Math.max(radiusMeters / 111000.0, 0.05);
     const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(
       searchTerm
     )}&viewbox=${lon - delta},${lat + delta},${lon + delta},${
       lat - delta
-    }&bounded=1&limit=10&addressdetails=1`;
+    }&bounded=0&limit=15&addressdetails=1`;
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 6000);
@@ -465,17 +746,15 @@ class MapSearchService {
           const itemLat = parseFloat(item.lat);
           const itemLon = parseFloat(item.lon);
           const dist = calculateDistanceMeters(lat, lon, itemLat, itemLon);
-          if (dist <= radiusMeters) {
-            results.push({
-              id: String(item.place_id || `${itemLat}_${itemLon}`),
-              name: item.name || (item.display_name ? item.display_name.split(",")[0] : searchTerm),
-              category: item.type || category,
-              latitude: itemLat,
-              longitude: itemLon,
-              distanceMeters: dist,
-              address: item.display_name,
-            });
-          }
+          results.push({
+            id: String(item.place_id || `${itemLat}_${itemLon}`),
+            name: item.name || (item.display_name ? item.display_name.split(",")[0] : searchTerm),
+            category: item.type || category,
+            latitude: itemLat,
+            longitude: itemLon,
+            distanceMeters: dist,
+            address: item.display_name,
+          });
         }
         results.sort((a, b) => a.distanceMeters - b.distanceMeters);
         return results;

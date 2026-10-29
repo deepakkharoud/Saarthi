@@ -249,12 +249,12 @@ export class LocationService {
 
   public getLastKnownLocation(): RealGpsLocation | null {
     if (!this.lastLocation) return null;
-    const isStale = Date.now() - this.lastLocation.timestamp > 15000;
+    const isStale = Math.abs(Date.now() - this.lastLocation.timestamp) > 30000;
     return { ...this.lastLocation, isStale };
   }
 
   public getDiagnostics(): LocationDiagnostics {
-    const isStale = this.lastLocation ? Date.now() - this.lastLocation.timestamp > 15000 : true;
+    const isStale = this.lastLocation ? Math.abs(Date.now() - this.lastLocation.timestamp) > 30000 : true;
     return {
       permissionGranted: true,
       servicesEnabled: true,
@@ -271,7 +271,7 @@ export class LocationService {
 
   private transformExpoPosition(pos: Location.LocationObject): RealGpsLocation {
     const acc = pos.coords.accuracy ?? 99.0;
-    const isStale = Date.now() - pos.timestamp > 15000;
+    const isStale = Math.abs(Date.now() - pos.timestamp) > 30000;
     return {
       latitude: pos.coords.latitude,
       longitude: pos.coords.longitude,
@@ -310,7 +310,7 @@ export class LocationService {
     if (this.stalenessCheckTimer) return;
     this.stalenessCheckTimer = setInterval(() => {
       if (this.subscription && this.lastLocation) {
-        const isStaleNow = Date.now() - this.lastLocation.timestamp > 15000;
+        const isStaleNow = Math.abs(Date.now() - this.lastLocation.timestamp) > 30000;
         if (isStaleNow !== this.lastLocation.isStale) {
           this.lastLocation = {
             ...this.lastLocation,

@@ -14,6 +14,7 @@ class WalkingManeuver(BaseModel):
     bearing_degrees: Optional[float] = None
     maneuver_type: Optional[str] = None
     location: Coordinates
+    has_stairs: bool = Field(default=False, description="True if this specific maneuver involves steps or stairs")
 
 
 class WalkingRouteRequest(BaseModel):
@@ -31,4 +32,13 @@ class WalkingRouteResponse(BaseModel):
     coordinates: List[List[float]] = Field(default_factory=list, description="[[lat, lon], ...] coordinates along route")
     maneuvers: List[WalkingManeuver] = Field(default_factory=list)
     spoken_summary: str = Field(default="")
+    has_stairs: bool = Field(default=False, description="True if any segment contains steps or stairs")
+    accessibility_status: str = Field(
+        default="unknown",
+        description="'verified_stair_free', 'contains_stairs', or 'unknown'"
+    )
+    stairs_warning: Optional[str] = Field(
+        default=None,
+        description="Clear spoken warning if stairs could not be avoided"
+    )
     error_message: Optional[str] = None

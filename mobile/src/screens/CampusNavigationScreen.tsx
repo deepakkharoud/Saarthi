@@ -49,6 +49,7 @@ import {
 } from "../services/navigationProgressService";
 import {
   mapSearchService,
+  calculateDistanceMeters,
   MapSearchResult,
   NearbyPlaceResult,
   NearbyCategory,
@@ -61,6 +62,15 @@ import {
 import { CampusMapView } from "../components/CampusMapView";
 import { NavigationRoute } from "../navigation/campusRouter";
 import { globalVoiceService } from "../services/globalVoiceService";
+import { voiceRecognitionService } from "../services/voiceRecognition";
+import { parseVoiceCommand } from "../services/voiceCommands";
+
+export type MapVoiceState = "IDLE" | "LISTENING" | "PROCESSING" | "RESPONDING";
+
+export interface PendingDisambiguation {
+  query: string;
+  candidates: MapSearchResult[];
+}
 
 export interface CampusNavigationVoiceActions {
   onSearchDestination: (query: string) => Promise<void>;
@@ -122,6 +132,41 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
   const [isRecenterRequested, setIsRecenterRequested] = useState<boolean>(false);
   const [navigationMode, setNavigationMode] = useState<"outdoor_gps" | "indoor_landmark">("outdoor_gps");
 
+  // Map-Scoped Voice & Disambiguation State Machine: IDLE -> LISTENING -> PROCESSING -> RESPONDING
+  const mapVoiceStateRef = useRef<MapVoiceState>("IDLE");
+  const [mapVoiceState, setMapVoiceState] = useState<MapVoiceState>("IDLE");
+  const [isMapVoiceActive, setIsMapVoiceActive] = useState<boolean>(false);
+  const [isMapListening, setIsMapListening] = useState<boolean>(false);
+  const [mapVoiceStatus, setMapVoiceStatus] = useState<string>("Voice mode off");
+  const [pendingDisambiguation, setPendingDisambiguation] = useState<PendingDisambiguation | null>(null);
+
+  const wasGlobalVoiceActiveRef = useRef<boolean>(false);
+  const mapVoiceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isMountedRef = useRef<boolean>(true);
+  const latestTranscriptRef = useRef<string>("");
+  const hasProcessedTranscriptRef = useRef<boolean>(false);
+  const consecutiveSilencesRef = useRef<number>(0);
+  const consecutiveErrorsRef = useRef<number>(0);
+  const hasSpokenWelcomePromptRef = useRef<boolean>(false);
+
+  // Active destinations for map rendering:
+  // Render campus POIs only when physically near campus (<3km)
+  // Otherwise, only render the selected destination pin to keep the general map clean
+  const activeDestinations = useMemo(() => {
+    const isNearCampus =
+      currentLocation &&
+      !currentLocation.isStale &&
+      calculateDistanceMeters(currentLocation.latitude, currentLocation.longitude, 30.76864, 76.57505) < 3000;
+
+    if (isNearCampus) {
+      return CHANDIGARH_UNIVERSITY_POIS;
+    }
+    if (selectedPoi) {
+      return [selectedPoi];
+    }
+    return [];
+  }, [currentLocation, selectedPoi]);
+
   // Filtered Campus Survey POIs
   const localCampusPois = useMemo(() => {
     return searchCampusPois(searchQuery);
@@ -170,6 +215,135 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
     }
   }, [searchQuery, currentLocation?.latitude, currentLocation?.longitude]);
 
+  // --- Map-Scoped Voice State Machine (IDLE -> LISTENING -> PROCESSING -> RESPONDING) ---
+
+  const clearVoiceTimer = useCallback(() => {
+    if (mapVoiceTimerRef.current) {
+      clearTimeout(mapVoiceTimerRef.current);
+      mapVoiceTimerRef.current = null;
+    }
+  }, []);
+
+  const transitionTo = useCallback((nextState: MapVoiceState, statusText?: string) => {
+    mapVoiceStateRef.current = nextState;
+    setMapVoiceState(nextState);
+    if (nextState === "LISTENING") {
+      setIsMapVoiceActive(true);
+      setIsMapListening(true);
+    } else if (nextState === "IDLE") {
+      setIsMapVoiceActive(false);
+      setIsMapListening(false);
+    } else {
+      // PROCESSING or RESPONDING
+      setIsMapVoiceActive(true);
+      setIsMapListening(false);
+    }
+    if (statusText) {
+      setMapVoiceStatus(statusText);
+    }
+  }, []);
+
+  const startMapListeningSessionRef = useRef<() => void>(() => {});
+  const handleMapVoiceTranscriptRef = useRef<(rawText: string) => Promise<void>>(async () => {});
+
+  const speakAndThenListen = useCallback((speechText: string, listenDelayMs: number = 300) => {
+    if (!isMountedRef.current) return;
+    clearVoiceTimer();
+    voiceRecognitionService.cancelListening();
+    transitionTo("RESPONDING", speechText);
+
+    speechService.speak(speechText, {
+      force: true,
+      onDone: () => {
+        if (!isMountedRef.current || mapVoiceStateRef.current === "IDLE") return;
+        clearVoiceTimer();
+        mapVoiceTimerRef.current = setTimeout(() => {
+          if (!isMountedRef.current || mapVoiceStateRef.current === "IDLE") return;
+          if (speechService.isSpeaking()) {
+            mapVoiceTimerRef.current = setTimeout(() => {
+              if (isMountedRef.current && mapVoiceStateRef.current !== "IDLE") {
+                startMapListeningSessionRef.current();
+              }
+            }, 250);
+            return;
+          }
+          startMapListeningSessionRef.current();
+        }, listenDelayMs);
+      },
+      onError: () => {
+        if (!isMountedRef.current || mapVoiceStateRef.current === "IDLE") return;
+        clearVoiceTimer();
+        mapVoiceTimerRef.current = setTimeout(() => {
+          if (!isMountedRef.current || mapVoiceStateRef.current === "IDLE") return;
+          startMapListeningSessionRef.current();
+        }, listenDelayMs);
+      },
+    });
+  }, [clearVoiceTimer, transitionTo]);
+
+  const speakResponseAndIdle = useCallback((speechText: string) => {
+    if (!isMountedRef.current) return;
+    clearVoiceTimer();
+    voiceRecognitionService.cancelListening();
+    transitionTo("RESPONDING", speechText);
+
+    speechService.speak(speechText, {
+      force: true,
+      onDone: () => {
+        if (!isMountedRef.current) return;
+        transitionTo("IDLE", "Voice mode off");
+      },
+      onError: () => {
+        if (!isMountedRef.current) return;
+        transitionTo("IDLE", "Voice mode off");
+      },
+    });
+  }, [clearVoiceTimer, transitionTo]);
+
+  const handleCustomNavigateBack = useCallback(() => {
+    clearVoiceTimer();
+    voiceRecognitionService.cancelListening();
+    speechService.stop();
+    transitionTo("IDLE", "Map voice is off.");
+
+    if (wasGlobalVoiceActiveRef.current) {
+      globalVoiceService.resumeListening(true);
+    }
+    onNavigateBack();
+  }, [clearVoiceTimer, transitionTo, onNavigateBack]);
+
+  // Lifecycle Coordination: Suspends Home voice on map mount, speaks prompt ONCE, restores Home voice on unmount
+  useEffect(() => {
+    isMountedRef.current = true;
+
+    // Check if Home / Global Voice was active when entering map
+    const globalState = globalVoiceService.getState();
+    const wasActive = globalState.isActive && !globalState.isPaused;
+    wasGlobalVoiceActiveRef.current = wasActive;
+
+    if (wasActive && !hasSpokenWelcomePromptRef.current) {
+      hasSpokenWelcomePromptRef.current = true;
+      // Suspend global voice immediately so Home prompts do not fire
+      globalVoiceService.pauseListening(false);
+      speechService.stop();
+
+      // Launch scoped map voice mode ONCE with short, non-looping prompt
+      speakAndThenListen("Where would you like to go?");
+    }
+
+    return () => {
+      isMountedRef.current = false;
+      clearVoiceTimer();
+      voiceRecognitionService.cancelListening();
+      speechService.stop();
+
+      // Restore Home voice mode cleanly if it was active when entering map
+      if (wasGlobalVoiceActiveRef.current) {
+        globalVoiceService.resumeListening(true);
+      }
+    };
+  }, [clearVoiceTimer, speakAndThenListen]);
+
   // Handle route recalculation when user deviates
   const handleRecalculateRoute = useCallback(
     async (devGps: RealGpsLocation) => {
@@ -207,19 +381,20 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
 
   // START ROUTE CALCULATION AND GUIDANCE FOR A GIVEN DESTINATION
   const calculateAndStartRoute = useCallback(
-    async (poi: CampusPoi) => {
+    async (poi: CampusPoi, avoidStairsOverride?: boolean) => {
       if (!currentLocation || currentLocation.isStale) {
-        setRouteError("Waiting for real GPS location fix. Please ensure you are outdoors with clear sky view.");
-        await speechService.speak(
-          "Waiting for GPS location fix. Please stand with clear sky view before starting navigation.",
-          { force: true }
-        );
+        const locationMessage = currentLocation?.isStale
+          ? "GPS fix is stale. Waiting for a fresh location before starting navigation."
+          : "Waiting for GPS location fix. Please ensure location is enabled.";
+        setRouteError(locationMessage);
+        speakAndThenListen(locationMessage);
         return;
       }
 
       await hapticsService.triggerButtonPress();
       setIsCalculatingRoute(true);
       setRouteError(null);
+      transitionTo("PROCESSING", `Finding route to ${poi.name}...`);
 
       const startCoord: RouteCoordinates = {
         latitude: currentLocation.latitude,
@@ -232,7 +407,7 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
 
       try {
         const route = await outdoorRoutingService.calculateRoute(startCoord, destCoord, {
-          avoidStairs,
+          avoidStairs: avoidStairsOverride ?? avoidStairs,
           destinationName: poi.name,
         });
 
@@ -243,26 +418,74 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
           navigationProgressService.startNavigation(route, handleRecalculateRoute);
           await hapticsService.triggerSuccess();
 
-          const spokenAnnouncement = `Your destination ${poi.name} is approximately ${
+          if (onActiveRouteChanged) {
+            onActiveRouteChanged({
+              status: "success",
+              startNode: {
+                id: "gps_start",
+                label: "Current Location",
+                type: "landmark",
+                building: "Outdoor",
+                floor: 0,
+              },
+              destinationNode: {
+                id: poi.id,
+                label: poi.name,
+                type: "landmark",
+                building: poi.category || "Outdoor",
+                floor: 0,
+              },
+              totalDistanceMeters: route.totalDistanceMeters,
+              steps: route.maneuvers.map((m, idx) => ({
+                stepIndex: idx,
+                fromNode: { id: `m_${idx}`, label: `Step ${idx + 1}`, type: "junction", building: "Outdoor", floor: 0 },
+                toNode: { id: `m_${idx + 1}`, label: m.instruction, type: "landmark", building: "Outdoor", floor: 0 },
+                distanceMeters: m.distanceMeters,
+                hasStairs: Boolean(m.hasStairs),
+                spokenInstruction: m.instruction,
+                hazards: m.hasStairs ? ["Contains steps / stairs"] : [],
+              })),
+              usesStairs: route.hasStairs,
+              spokenSummary: route.spokenSummary,
+              isDemoData: false,
+            });
+          }
+
+          const distStr =
             route.totalDistanceMeters >= 1000
               ? (route.totalDistanceMeters / 1000).toFixed(1) + " kilometers"
-              : route.totalDistanceMeters + " meters"
-          } away. ${route.maneuvers[0]?.instruction || "Proceed along route."}`;
+              : route.totalDistanceMeters + " meters";
+          const durationStr = `${Math.max(1, Math.round(route.totalTimeSeconds / 60))} minutes walk`;
 
-          await speechService.speak(spokenAnnouncement, { force: true });
+          let accessibilityAnnounce = "";
+          if (route.stairsWarning) {
+            accessibilityAnnounce = ` ${route.stairsWarning}`;
+          } else if (route.accessibilityStatus === "verified_stair_free") {
+            accessibilityAnnounce = " Route is confirmed stair-free.";
+          } else if (route.hasStairs) {
+            accessibilityAnnounce = " Notice: route includes stairs.";
+          } else if (route.accessibilityStatus === "unknown") {
+            accessibilityAnnounce = " Stair-free status could not be confirmed from map data.";
+          }
+
+          const spokenAnnouncement = `Walking route to ${poi.name} found. Distance: ${distStr}, approximately ${durationStr}.${accessibilityAnnounce} First step: ${route.maneuvers[0]?.instruction || "Proceed along route."}`;
+
+          // Transition to IDLE once route is underway (turn-by-turn navigation engine provides live maneuver speech)
+          speakResponseAndIdle(spokenAnnouncement);
         } else {
           setActiveOutdoorRoute(null);
-          setRouteError(route.spokenSummary || "No direct pedestrian route found in OpenStreetMap data.");
-          await speechService.speak(route.spokenSummary || "No walking route found to this destination.", { force: true });
+          const failMsg = route.spokenSummary || "No direct pedestrian route found.";
+          setRouteError(failMsg);
+          speakAndThenListen(failMsg + " Please try another destination.");
         }
       } catch (err: any) {
         setIsCalculatingRoute(false);
         const errMsg = "Failed to calculate walking route. Please check your data connection.";
         setRouteError(errMsg);
-        await speechService.speak(errMsg, { force: true });
+        speakAndThenListen(errMsg + " Please try again.");
       }
     },
-    [currentLocation, avoidStairs, handleRecalculateRoute]
+    [currentLocation, avoidStairs, handleRecalculateRoute, onActiveRouteChanged, speakAndThenListen, speakResponseAndIdle, transitionTo]
   );
 
   // Select a destination POI or search result
@@ -270,13 +493,15 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
     async (poi: CampusPoi, autoStart: boolean = false) => {
       setSelectedPoi(poi);
       setRouteError(null);
-      await speechService.speak(`Selected destination: ${poi.name}.`, { force: true });
+      setPendingDisambiguation(null);
 
       if (autoStart) {
         await calculateAndStartRoute(poi);
+      } else {
+        speakAndThenListen(`Selected destination: ${poi.name}. Say start route to begin navigation.`);
       }
     },
-    [calculateAndStartRoute]
+    [calculateAndStartRoute, speakAndThenListen]
   );
 
   // Convert a search result to CampusPoi and select
@@ -323,6 +548,7 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
       await hapticsService.triggerButtonPress();
       setActiveNearbyCategory(category);
       setIsLoadingNearby(true);
+      transitionTo("PROCESSING", `Finding nearby ${category}...`);
 
       const lat = currentLocation?.latitude ?? 30.76864;
       const lon = currentLocation?.longitude ?? 76.57505;
@@ -338,67 +564,65 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
             nearest.distanceMeters >= 1000
               ? (nearest.distanceMeters / 1000).toFixed(1) + " kilometers"
               : Math.round(nearest.distanceMeters) + " meters";
-          const spoken = `Found ${places.length} nearby ${category} locations. The nearest is ${nearest.name}, approximately ${distStr} away.`;
-          await speechService.speak(spoken, { force: true });
+          const spoken = `Found ${places.length} nearby ${category} locations. The nearest is ${nearest.name}, approximately ${distStr} away. Say take me to ${nearest.name} to navigate.`;
+          speakAndThenListen(spoken);
         } else {
-          const spoken = `No ${category} found within four kilometers in OpenStreetMap data.`;
-          await speechService.speak(spoken, { force: true });
+          const spoken = `No ${category} found within four kilometers. Please try another search.`;
+          speakAndThenListen(spoken);
         }
       } catch {
         setIsLoadingNearby(false);
-        await speechService.speak(`Could not retrieve nearby ${category}. Please check internet connection.`, {
-          force: true,
-        });
+        speakAndThenListen(`Could not retrieve nearby ${category}. Please check your connection.`);
       }
     },
-    [currentLocation]
+    [currentLocation, speakAndThenListen, transitionTo]
   );
 
   // START NAVIGATION BUTTON ACTION
-  const handleStartNavigation = async () => {
+  const handleStartNavigation = useCallback(async () => {
     if (!selectedPoi) {
       setRouteError("Please select a destination from the list or search above.");
-      await speechService.speak("Please select a destination first.", { force: true });
+      speakAndThenListen("Please select a destination first.");
       return;
     }
     await calculateAndStartRoute(selectedPoi);
-  };
+  }, [selectedPoi, calculateAndStartRoute, speakAndThenListen]);
 
   // REPEAT INSTRUCTION
-  const handleRepeatInstruction = async () => {
+  const handleRepeatInstruction = useCallback(async () => {
     await hapticsService.triggerBottomLeft();
     if (activeOutdoorRoute && navProgress.isActive) {
       await navigationProgressService.repeatCurrentInstruction();
     } else {
       await speechService.repeatLast();
     }
-  };
+  }, [activeOutdoorRoute, navProgress.isActive]);
 
   // STOP SPEAKING / SILENCE
-  const handleStopSpeaking = async () => {
+  const handleStopSpeaking = useCallback(async () => {
     await hapticsService.triggerBottomLeft();
     await navigationProgressService.stopSpeaking();
     await speechService.stop();
-  };
+  }, []);
 
   // END NAVIGATION
-  const handleEndNavigation = async () => {
+  const handleEndNavigation = useCallback(async () => {
     await hapticsService.triggerBottomLeft();
     navigationProgressService.stopNavigation();
     setActiveOutdoorRoute(null);
     onActiveRouteChanged?.(null);
-    await speechService.speak("Campus navigation stopped.", { force: true });
-  };
+    speakAndThenListen("Campus navigation stopped. Where would you like to go next?");
+  }, [onActiveRouteChanged, speakAndThenListen]);
 
   // RECENTER MAP
-  const handleRecenter = async () => {
+  const handleRecenter = useCallback(async () => {
     await hapticsService.triggerButtonPress();
     setIsRecenterRequested(true);
     const msg = currentLocation
       ? `Centering map on current location. Accuracy: plus or minus ${Math.round(currentLocation.accuracyMeters)} meters.`
-      : "Centering map on campus center.";
-    await speechService.speak(msg, { force: true });
-  };
+      : "Centering map.";
+    speakAndThenListen(msg);
+  }, [currentLocation, speakAndThenListen]);
 
   // DESCRIBE SURROUNDINGS / WHERE AM I
   const handleDescribeSurroundings = useCallback(async () => {
@@ -407,14 +631,438 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
         currentLocation.latitude,
         currentLocation.longitude
       );
-      await speechService.speak(description, { force: true });
+      speakAndThenListen(description);
     } else {
-      await speechService.speak(
-        "Acquiring GPS fix. Please ensure location is enabled and you are outdoors with clear sky view.",
-        { force: true }
-      );
+      speakAndThenListen("Waiting for GPS location fix. Please ensure location is enabled and you are outdoors with clear sky view.");
     }
-  }, [currentLocation]);
+  }, [currentLocation, speakAndThenListen]);
+
+  // GET STATUS
+  const handleGetStatus = useCallback(async () => {
+    if (activeOutdoorRoute && navProgress.isActive) {
+      const distStr =
+        navProgress.remainingTotalDistanceMeters >= 1000
+          ? (navProgress.remainingTotalDistanceMeters / 1000).toFixed(1) + " kilometers"
+          : navProgress.remainingTotalDistanceMeters + " meters";
+      const statusMsg = `You are approximately ${distStr} from your destination. ${navProgress.currentManeuver?.instruction || ""}`;
+      speakAndThenListen(statusMsg);
+    } else {
+      speakAndThenListen("Navigation is not active. Say where you would like to go to begin.");
+    }
+  }, [activeOutdoorRoute, navProgress, speakAndThenListen]);
+
+  // SEARCH NEARBY FROM VOICE
+  const handleSearchNearbyFromVoice = useCallback(
+    async (cat: string) => {
+      let normalizedCat: NearbyCategory = "hospital";
+      const c = cat.toLowerCase();
+      if (c.includes("hospital") || c.includes("clinic") || c.includes("pharmacy")) normalizedCat = "hospital";
+      else if (c.includes("food") || c.includes("restaurant") || c.includes("cafe")) normalizedCat = "food";
+      else if (c.includes("atm") || c.includes("bank") || c.includes("cash")) normalizedCat = "atm";
+      else if (c.includes("bus") || c.includes("transit") || c.includes("station")) normalizedCat = "transit";
+      else if (c.includes("college") || c.includes("university")) normalizedCat = "college";
+      else if (c.includes("fuel") || c.includes("petrol") || c.includes("gas")) normalizedCat = "fuel";
+
+      await handleSearchNearbyCategory(normalizedCat);
+    },
+    [handleSearchNearbyCategory]
+  );
+
+  // SEARCH DESTINATION & DISAMBIGUATION
+  const handleVoiceSearchDestination = useCallback(
+    async (destQuery: string, autoStart: boolean = true) => {
+      const q = destQuery.trim();
+      if (!q) {
+        speakAndThenListen("Where would you like to go? You can say an address, hospital, station, shop, or landmark.");
+        return;
+      }
+
+      setSearchQuery(q);
+      setRouteError(null);
+      transitionTo("PROCESSING", `Finding "${q}"...`);
+
+      const lat = currentLocation?.latitude;
+      const lon = currentLocation?.longitude;
+      const candidates = await mapSearchService.searchDestinations(q, lat, lon);
+
+      if (candidates.length === 0) {
+        setPendingDisambiguation(null);
+        const msg = `I couldn't find "${q}". Please try another destination.`;
+        setRouteError(msg);
+        speakAndThenListen(msg);
+        return;
+      }
+
+      if (candidates.length === 1) {
+        setPendingDisambiguation(null);
+        await handleSelectSearchResult(candidates[0], autoStart);
+        return;
+      }
+
+      // Multiple matches: ask the user which one they mean before starting a route!
+      const top = candidates.slice(0, 3);
+      setPendingDisambiguation({ query: q, candidates: top });
+
+      const optionsSpoken = top
+        .map((c, idx) => {
+          const detail = c.displayName && c.displayName !== c.name ? `, ${c.displayName.split(",")[1] || ""}` : "";
+          const distStr = c.distanceMeters ? ` (${c.distanceMeters >= 1000 ? (c.distanceMeters / 1000).toFixed(1) + " kilometers" : c.distanceMeters + " meters"} away)` : "";
+          return `${idx + 1}, ${c.name}${detail}${distStr}`;
+        })
+        .join(". ");
+
+      const promptMsg = `I found ${top.length} destinations matching ${q}: ${optionsSpoken}. Which one would you like? Say 1, 2, or 3.`;
+      speakAndThenListen(promptMsg);
+    },
+    [currentLocation, handleSelectSearchResult, speakAndThenListen, transitionTo]
+  );
+
+  // HANDLE RECOGNIZED TRANSCRIPT
+  const handleMapVoiceTranscript = useCallback(
+    async (rawText: string) => {
+      consecutiveSilencesRef.current = 0;
+      consecutiveErrorsRef.current = 0;
+      transitionTo("PROCESSING", `Processing: "${rawText}"`);
+
+      const cleaned = rawText
+        .toLowerCase()
+        .replace(/['’]/g, "")
+        .replace(/[.,?!:;'"-]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      // 1. Check pending disambiguation answering
+      if (pendingDisambiguation && pendingDisambiguation.candidates.length > 0) {
+        const candidates = pendingDisambiguation.candidates;
+
+        // Cancel / None
+        if (
+          cleaned === "cancel" ||
+          cleaned === "stop" ||
+          cleaned === "none" ||
+          cleaned === "neither" ||
+          cleaned === "never mind" ||
+          cleaned === "nevermind"
+        ) {
+          setPendingDisambiguation(null);
+          speakAndThenListen("Cancelled destination selection. What would you like to search for?");
+          return;
+        }
+
+        // Choice 1
+        if (
+          cleaned === "1" ||
+          cleaned === "one" ||
+          cleaned === "first" ||
+          cleaned === "option 1" ||
+          cleaned === "the first one" ||
+          cleaned === "number 1" ||
+          cleaned.startsWith("1") ||
+          cleaned.startsWith("option 1") ||
+          cleaned.startsWith("first") ||
+          candidates[0].name.toLowerCase().includes(cleaned)
+        ) {
+          setPendingDisambiguation(null);
+          await handleSelectSearchResult(candidates[0], true);
+          return;
+        }
+
+        // Choice 2
+        if (
+          candidates.length > 1 &&
+          (cleaned === "2" ||
+            cleaned === "two" ||
+            cleaned === "second" ||
+            cleaned === "option 2" ||
+            cleaned === "the second one" ||
+            cleaned === "number 2" ||
+            cleaned.startsWith("2") ||
+            cleaned.startsWith("option 2") ||
+            cleaned.startsWith("second") ||
+            candidates[1].name.toLowerCase().includes(cleaned))
+        ) {
+          setPendingDisambiguation(null);
+          await handleSelectSearchResult(candidates[1], true);
+          return;
+        }
+
+        // Choice 3
+        if (
+          candidates.length > 2 &&
+          (cleaned === "3" ||
+            cleaned === "three" ||
+            cleaned === "third" ||
+            cleaned === "option 3" ||
+            cleaned === "the third one" ||
+            cleaned === "number 3" ||
+            cleaned.startsWith("3") ||
+            cleaned.startsWith("option 3") ||
+            cleaned.startsWith("third") ||
+            candidates[2].name.toLowerCase().includes(cleaned))
+        ) {
+          setPendingDisambiguation(null);
+          await handleSelectSearchResult(candidates[2], true);
+          return;
+        }
+
+        // Spoke another intent/query -> clear disambiguation and fall through
+        setPendingDisambiguation(null);
+      }
+
+      // 2. Parse general voice intents
+      const parsed = parseVoiceCommand(rawText);
+
+      if (parsed.intent === "exit_voice_mode") {
+        speakResponseAndIdle("Map voice mode is off.");
+        return;
+      }
+
+      if (parsed.intent === "stop_listening") {
+        voiceRecognitionService.cancelListening();
+        speakResponseAndIdle("Listening paused. Tap the microphone to resume.");
+        return;
+      }
+
+      if (parsed.intent === "resume_listening") {
+        speakAndThenListen("Where would you like to go?");
+        return;
+      }
+
+      if (parsed.intent === "stop") {
+        await handleStopSpeaking();
+        transitionTo("IDLE", "Voice mode off");
+        return;
+      }
+
+      if (parsed.intent === "repeat") {
+        await handleRepeatInstruction();
+        speakAndThenListen("Instruction repeated. Where would you like to go?");
+        return;
+      }
+
+      if (parsed.intent === "stop_navigation") {
+        await handleEndNavigation();
+        return;
+      }
+
+      if (
+        cleaned === "start route" ||
+        cleaned === "start navigation" ||
+        cleaned === "start" ||
+        cleaned === "begin navigation" ||
+        cleaned === "begin route"
+      ) {
+        await handleStartNavigation();
+        return;
+      }
+
+      if (parsed.intent === "recenter_map") {
+        await handleRecenter();
+        return;
+      }
+
+      if (parsed.intent === "where_am_i") {
+        await handleDescribeSurroundings();
+        return;
+      }
+
+      if (parsed.intent === "navigation_status") {
+        await handleGetStatus();
+        return;
+      }
+
+      if (parsed.intent === "nearby_places") {
+        const cat = parsed.categoryQuery || "places";
+        await handleSearchNearbyFromVoice(cat);
+        return;
+      }
+
+      if (
+        parsed.intent === "go_back" ||
+        parsed.intent === "open_home" ||
+        cleaned === "exit map" ||
+        cleaned === "close map"
+      ) {
+        handleCustomNavigateBack();
+        return;
+      }
+
+      // Avoid stairs toggle via voice
+      if (
+        cleaned.includes("avoid stairs") ||
+        cleaned.includes("no stairs") ||
+        cleaned.includes("without stairs") ||
+        cleaned.includes("stair free")
+      ) {
+        setAvoidStairs(true);
+        if (selectedPoi && currentLocation) {
+          await calculateAndStartRoute(selectedPoi, true);
+        } else {
+          speakAndThenListen("Stair avoidance enabled. Where would you like to go?");
+        }
+        return;
+      }
+
+      // Allow stairs via voice
+      if (
+        cleaned.includes("allow stairs") ||
+        cleaned.includes("use stairs") ||
+        cleaned.includes("shortest route")
+      ) {
+        setAvoidStairs(false);
+        if (selectedPoi && currentLocation) {
+          await calculateAndStartRoute(selectedPoi, false);
+        } else {
+          speakAndThenListen("Stair avoidance disabled. Where would you like to go?");
+        }
+        return;
+      }
+
+      // Alternative route / recalculate
+      if (
+        cleaned.includes("alternative route") ||
+        cleaned.includes("recalculate") ||
+        cleaned.includes("different route")
+      ) {
+        if (selectedPoi && currentLocation) {
+          speakAndThenListen("Recalculating pedestrian route.");
+          await calculateAndStartRoute(selectedPoi);
+        } else {
+          speakAndThenListen("No active destination to recalculate. Please say your destination.");
+        }
+        return;
+      }
+
+      if (parsed.intent === "what_can_i_do") {
+        const helpMsg =
+          "On Campus Map, you can say: take me to the hospital, find a pharmacy, stop navigation, where am I, or repeat.";
+        speakAndThenListen(helpMsg);
+        return;
+      }
+
+      // 3. Fall through to destination query
+      const destQuery = parsed.destinationQuery || rawText;
+      await handleVoiceSearchDestination(destQuery);
+    },
+    [
+      pendingDisambiguation,
+      handleSelectSearchResult,
+      speakAndThenListen,
+      speakResponseAndIdle,
+      transitionTo,
+      handleStopSpeaking,
+      handleRepeatInstruction,
+      handleEndNavigation,
+      handleStartNavigation,
+      handleRecenter,
+      handleDescribeSurroundings,
+      handleGetStatus,
+      handleSearchNearbyFromVoice,
+      handleCustomNavigateBack,
+      selectedPoi,
+      currentLocation,
+      calculateAndStartRoute,
+      handleVoiceSearchDestination,
+    ]
+  );
+
+  handleMapVoiceTranscriptRef.current = handleMapVoiceTranscript;
+
+  // START MAP LISTENING SESSION (Reliable State Machine)
+  const startMapListeningSession = useCallback(() => {
+    if (!isMountedRef.current) return;
+    clearVoiceTimer();
+
+    // Guard: Never listen while speech output is playing
+    if (speechService.isSpeaking()) {
+      mapVoiceTimerRef.current = setTimeout(() => {
+        if (isMountedRef.current && mapVoiceStateRef.current !== "IDLE") {
+          startMapListeningSession();
+        }
+      }, 250);
+      return;
+    }
+
+    const avail = voiceRecognitionService.checkAvailability();
+    if (!avail.available) {
+      speakResponseAndIdle("Voice input is unavailable. You can enter your destination manually.");
+      return;
+    }
+
+    latestTranscriptRef.current = "";
+    hasProcessedTranscriptRef.current = false;
+    transitionTo("LISTENING", "Listening for destination...");
+
+    try {
+      voiceRecognitionService.startListening({
+        onStart: () => {
+          if (!isMountedRef.current || mapVoiceStateRef.current !== "LISTENING") return;
+          transitionTo("LISTENING", "Listening...");
+          latestTranscriptRef.current = "";
+          hasProcessedTranscriptRef.current = false;
+        },
+        onResult: (res) => {
+          if (!isMountedRef.current || mapVoiceStateRef.current !== "LISTENING") return;
+          const text = res.transcript.trim();
+          if (text) {
+            latestTranscriptRef.current = text;
+          }
+          if (res.isFinal && text && !hasProcessedTranscriptRef.current) {
+            hasProcessedTranscriptRef.current = true;
+            voiceRecognitionService.stopListening();
+            transitionTo("PROCESSING", `Processing: "${text}"`);
+            handleMapVoiceTranscriptRef.current(text);
+          }
+        },
+        onEnd: () => {
+          if (!isMountedRef.current || mapVoiceStateRef.current !== "LISTENING") return;
+          if (!hasProcessedTranscriptRef.current) {
+            const captured = latestTranscriptRef.current.trim();
+            if (captured) {
+              // Successfully captured speech even if native isFinal flag was not emitted
+              hasProcessedTranscriptRef.current = true;
+              transitionTo("PROCESSING", `Processing: "${captured}"`);
+              handleMapVoiceTranscriptRef.current(captured);
+            } else {
+              // Do not automatically restart after silence: on devices where
+              // speech recognition ends early that creates a prompt loop and
+              // makes it appear that the microphone never accepts input.
+              consecutiveSilencesRef.current = 0;
+              speakResponseAndIdle(
+                "I didn't hear a destination. Voice input is paused. Tap the microphone and speak after the prompt."
+              );
+            }
+          }
+        },
+        onError: (err) => {
+          if (!isMountedRef.current || mapVoiceStateRef.current !== "LISTENING") return;
+          console.warn("[CampusMapVoice] Recognition error:", err);
+          consecutiveErrorsRef.current = 0;
+          speakResponseAndIdle(
+            `Voice recognition stopped: ${err}. Tap the microphone to try again, or type your destination.`
+          );
+        },
+      });
+    } catch {
+      speakResponseAndIdle("Could not start voice recognition. Tap the microphone to retry.");
+    }
+  }, [clearVoiceTimer, transitionTo, speakAndThenListen, speakResponseAndIdle]);
+
+  startMapListeningSessionRef.current = startMapListeningSession;
+
+  // TOGGLE MAP VOICE MODE FROM UI
+  const handleToggleMapVoice = useCallback(async () => {
+    await hapticsService.triggerButtonPress();
+    if (mapVoiceStateRef.current === "LISTENING") {
+      clearVoiceTimer();
+      voiceRecognitionService.cancelListening();
+      speakResponseAndIdle("Listening paused. Tap the microphone to resume.");
+    } else {
+      consecutiveSilencesRef.current = 0;
+      consecutiveErrorsRef.current = 0;
+      speakAndThenListen("Where would you like to go?");
+    }
+  }, [clearVoiceTimer, speakAndThenListen, speakResponseAndIdle]);
 
   // VOICE ACTIONS DISPATCHER REGISTRATION (Enables seamless continuous in-map conversation)
   useEffect(() => {
@@ -422,29 +1070,10 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
 
     const voiceActions: CampusNavigationVoiceActions = {
       onSearchDestination: async (destQuery: string) => {
-        setSearchQuery(destQuery);
-        const lat = currentLocation?.latitude;
-        const lon = currentLocation?.longitude;
-        const candidates = await mapSearchService.searchDestinations(destQuery, lat, lon);
-        if (candidates.length > 0) {
-          const top = candidates[0];
-          await handleSelectSearchResult(top, true);
-        } else {
-          const msg = `No destination found matching "${destQuery}". Please try another landmark or address.`;
-          await speechService.speak(msg, { force: true });
-        }
+        await handleVoiceSearchDestination(destQuery);
       },
       onSearchNearby: async (cat: string) => {
-        let normalizedCat: NearbyCategory = "hospital";
-        const c = cat.toLowerCase();
-        if (c.includes("hospital") || c.includes("clinic") || c.includes("pharmacy")) normalizedCat = "hospital";
-        else if (c.includes("food") || c.includes("restaurant") || c.includes("cafe")) normalizedCat = "food";
-        else if (c.includes("atm") || c.includes("bank") || c.includes("cash")) normalizedCat = "atm";
-        else if (c.includes("bus") || c.includes("transit") || c.includes("station")) normalizedCat = "transit";
-        else if (c.includes("college") || c.includes("university")) normalizedCat = "college";
-        else if (c.includes("fuel") || c.includes("petrol") || c.includes("gas")) normalizedCat = "fuel";
-
-        await handleSearchNearbyCategory(normalizedCat);
+        await handleSearchNearbyFromVoice(cat);
       },
       onStopNavigation: async () => {
         await handleEndNavigation();
@@ -459,18 +1088,7 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
         await handleDescribeSurroundings();
       },
       onGetStatus: async () => {
-        if (activeOutdoorRoute && navProgress.isActive) {
-          const distStr =
-            navProgress.remainingTotalDistanceMeters >= 1000
-              ? (navProgress.remainingTotalDistanceMeters / 1000).toFixed(1) + " kilometers"
-              : navProgress.remainingTotalDistanceMeters + " meters";
-          const statusMsg = `You are approximately ${distStr} from your destination. ${
-            navProgress.currentManeuver?.instruction || ""
-          }`;
-          await speechService.speak(statusMsg, { force: true });
-        } else {
-          await speechService.speak("Navigation is not active. Say take me to a destination to begin.", { force: true });
-        }
+        await handleGetStatus();
       },
     };
 
@@ -480,12 +1098,13 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
     };
   }, [
     onRegisterNavigationActions,
-    currentLocation,
-    handleSelectSearchResult,
-    handleSearchNearbyCategory,
+    handleVoiceSearchDestination,
+    handleSearchNearbyFromVoice,
+    handleEndNavigation,
+    handleRepeatInstruction,
+    handleRecenter,
     handleDescribeSurroundings,
-    activeOutdoorRoute,
-    navProgress,
+    handleGetStatus,
   ]);
 
   // Initial destination preset if provided via navigation props
@@ -517,13 +1136,15 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
       // Speak grounded surroundings introduction once immediately upon acquiring first reliable GPS fix
       if (!hasSpokenWelcomeDescription.current && !loc.isStale && loc.accuracyMeters <= 60) {
         hasSpokenWelcomeDescription.current = true;
-        try {
-          const surroundingsSpoken = await mapSearchService.describeSurroundings(loc.latitude, loc.longitude);
-          if (isMounted) {
-            await speechService.speak(surroundingsSpoken, { force: false });
+        if (mapVoiceStateRef.current === "IDLE" && !wasGlobalVoiceActiveRef.current) {
+          try {
+            const surroundingsSpoken = await mapSearchService.describeSurroundings(loc.latitude, loc.longitude);
+            if (isMounted) {
+              await speechService.speak(surroundingsSpoken, { force: false });
+            }
+          } catch {
+            // Safe isolate
           }
-        } catch {
-          // Safe isolate
         }
       }
     };
@@ -586,7 +1207,7 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
       {/* 1. TOP HEADER BAR */}
       <View style={styles.topHeader}>
         <Pressable
-          onPress={onNavigateBack}
+          onPress={handleCustomNavigateBack}
           accessible={true}
           accessibilityRole="button"
           accessibilityLabel="Back to Home Screen"
@@ -666,6 +1287,35 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
         </Pressable>
       </View>
 
+      {/* 2b. MAP-SCOPED VOICE STATUS BAR (Fix 2) */}
+      {isMapVoiceActive && (
+        <View style={styles.mapVoiceBar} accessible={true} accessibilityRole="summary">
+          <View style={styles.mapVoiceInfo}>
+            <View
+              style={[
+                styles.mapVoiceDot,
+                { backgroundColor: isMapListening ? "#05DF72" : "#FB923C" },
+              ]}
+            />
+            <Text style={styles.mapVoiceText}>
+              {isMapListening ? "Map Voice: Listening..." : "Map Voice: Paused"}
+            </Text>
+          </View>
+          <Pressable
+            onPress={handleToggleMapVoice}
+            accessible={true}
+            accessibilityRole="button"
+            accessibilityLabel={isMapListening ? "Pause map voice" : "Resume map voice"}
+            accessibilityHint="Toggles microphone listening in map mode"
+            style={styles.mapVoicePillButton}
+          >
+            <Text style={styles.mapVoicePillButtonText}>
+              {isMapListening ? "Pause" : "Resume"}
+            </Text>
+          </Pressable>
+        </View>
+      )}
+
       {/* 3. PERMISSION / GPS DISABLED WARNING */}
       {(isLocationDenied || isGpsDisabled) && (
         <View style={styles.warningBanner} accessible={true} accessibilityRole="alert">
@@ -681,7 +1331,7 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
         <CampusMapView
           currentLocation={currentLocation}
           selectedDestination={selectedPoi}
-          destinations={CHANDIGARH_UNIVERSITY_POIS}
+          destinations={activeDestinations}
           nearbyPlaces={nearbyPlaces}
           routeCoordinates={activeOutdoorRoute?.coordinates || []}
           onSelectPoi={(poi) => handleSelectPoi(poi, false)}
@@ -801,6 +1451,68 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
             contentContainerStyle={styles.setupScrollContent}
             keyboardShouldPersistTaps="handled"
           >
+            {/* Multi-Match Disambiguation Selection Card (Fix 1) */}
+            {pendingDisambiguation && pendingDisambiguation.candidates.length > 1 && (
+              <View style={styles.disambiguationCard} accessible={true}>
+                <View style={styles.disambiguationHeaderRow}>
+                  <Ionicons name="help-circle" size={22} color="#C084FC" />
+                  <Text style={styles.disambiguationTitle} accessibilityRole="header">
+                    Which destination do you mean?
+                  </Text>
+                </View>
+                <Text style={styles.disambiguationSubtitle}>
+                  Found {pendingDisambiguation.candidates.length} options matching &quot;{pendingDisambiguation.query}&quot;. Say or tap 1, 2, or 3:
+                </Text>
+
+                <View style={styles.disambiguationList}>
+                  {pendingDisambiguation.candidates.map((cand, idx) => (
+                    <Pressable
+                      key={cand.id}
+                      onPress={() => handleSelectSearchResult(cand, true)}
+                      accessible={true}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Option ${idx + 1}: ${cand.name}. Tap to navigate here.`}
+                      accessibilityHint="Selects this destination and begins walking route"
+                      style={({ pressed }) => [
+                        styles.disambiguationOptionRow,
+                        pressed && styles.disambiguationOptionRowPressed,
+                      ]}
+                    >
+                      <View style={styles.disambiguationBadge}>
+                        <Text style={styles.disambiguationBadgeText}>{idx + 1}</Text>
+                      </View>
+                      <View style={styles.disambiguationInfo}>
+                        <Text style={styles.disambiguationName} numberOfLines={1}>
+                          {cand.name}
+                        </Text>
+                        <Text style={styles.disambiguationDetail} numberOfLines={1}>
+                          {cand.distanceMeters !== undefined
+                            ? `${Math.round(cand.distanceMeters)}m away • `
+                            : ""}
+                          {cand.category || "destination"}
+                        </Text>
+                      </View>
+                      <Ionicons name="arrow-forward-circle" size={24} color="#38BDF8" />
+                    </Pressable>
+                  ))}
+                </View>
+
+                <Pressable
+                  onPress={() => {
+                    setPendingDisambiguation(null);
+                    speechService.speak("Cancelled selection.", { force: true });
+                  }}
+                  accessible={true}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel selection"
+                  accessibilityHint="Closes disambiguation options"
+                  style={styles.disambiguationCancelButton}
+                >
+                  <Text style={styles.disambiguationCancelText}>Cancel</Text>
+                </Pressable>
+              </View>
+            )}
+
             {/* Search Input Bar with Voice Microphone Button */}
             <View style={styles.searchContainer}>
               <Ionicons name="search" size={20} color="#94A3B8" />
@@ -826,18 +1538,24 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
               ) : null}
 
               <Pressable
-                onPress={async () => {
-                  await hapticsService.triggerButtonPress();
-                  await globalVoiceService.enableVoiceMode("Listening. Where would you like to go?");
-                }}
-
+                onPress={handleToggleMapVoice}
                 accessible={true}
                 accessibilityRole="button"
-                accessibilityLabel="Speak destination"
-                accessibilityHint="Activates microphone to speak where you want to go"
-                style={styles.micButton}
+                accessibilityLabel={
+                  isMapVoiceActive
+                    ? isMapListening
+                      ? "Map voice active and listening. Tap to pause."
+                      : "Map voice active and paused. Tap to listen."
+                    : "Speak destination"
+                }
+                accessibilityHint="Toggles map-scoped voice mode"
+                style={[styles.micButton, isMapVoiceActive && styles.micButtonActive]}
               >
-                <Ionicons name="mic" size={20} color="#38BDF8" />
+                <Ionicons
+                  name={isMapVoiceActive && isMapListening ? "mic" : "mic-outline"}
+                  size={20}
+                  color={isMapVoiceActive && isMapListening ? "#05DF72" : "#38BDF8"}
+                />
               </Pressable>
             </View>
 
@@ -1056,10 +1774,10 @@ export const CampusNavigationScreen: React.FC<CampusNavigationScreenProps> = ({
                             poi.category === "entrance"
                               ? "log-in"
                               : poi.category === "hostel"
-                              ? "home"
-                              : poi.category === "dining"
-                              ? "restaurant"
-                              : "business"
+                                ? "home"
+                                : poi.category === "dining"
+                                  ? "restaurant"
+                                  : "business"
                           }
                           size={20}
                           color={isSelected ? "#05DF72" : "#94A3B8"}
@@ -1507,5 +2225,130 @@ const styles = StyleSheet.create({
     color: "#94A3B8",
     fontSize: 12,
     marginTop: 2,
+  },
+  mapVoiceBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "rgba(117, 37, 230, 0.15)",
+    paddingVertical: 6,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(192, 132, 252, 0.25)",
+  },
+  mapVoiceInfo: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  mapVoiceDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  mapVoiceText: {
+    color: "#E2E8F0",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  mapVoicePillButton: {
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    backgroundColor: "rgba(30, 41, 59, 0.8)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.12)",
+  },
+  mapVoicePillButtonText: {
+    color: "#38BDF8",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  micButtonActive: {
+    backgroundColor: "rgba(5, 223, 114, 0.2)",
+    borderWidth: 1,
+    borderColor: "#05DF72",
+  },
+  disambiguationCard: {
+    backgroundColor: "#1E1B4B",
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1.5,
+    borderColor: "#A855F7",
+    gap: 10,
+    marginVertical: 4,
+  },
+  disambiguationHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  disambiguationTitle: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  disambiguationSubtitle: {
+    color: "#E2E8F0",
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  disambiguationList: {
+    gap: 8,
+    marginTop: 4,
+  },
+  disambiguationOptionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    height: 56,
+    backgroundColor: "rgba(30, 41, 59, 0.95)",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: "rgba(192, 132, 252, 0.4)",
+    gap: 12,
+  },
+  disambiguationOptionRowPressed: {
+    backgroundColor: "rgba(117, 37, 230, 0.3)",
+    borderColor: "#05DF72",
+  },
+  disambiguationBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#7525E6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  disambiguationBadgeText: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  disambiguationInfo: {
+    flex: 1,
+  },
+  disambiguationName: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  disambiguationDetail: {
+    color: "#A7F3D0",
+    fontSize: 12,
+    marginTop: 2,
+  },
+  disambiguationCancelButton: {
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 10,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    marginTop: 4,
+  },
+  disambiguationCancelText: {
+    color: "#94A3B8",
+    fontSize: 14,
+    fontWeight: "700",
   },
 });

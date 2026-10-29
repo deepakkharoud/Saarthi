@@ -5,8 +5,8 @@
  * All AI and external requests must go through the backend server.
  */
 
-// Default to the computer's LAN IP on port 8000 for physical phone access
-export const DEFAULT_BACKEND_URL = "http://192.168.1.42:8000";
+// Default to ADB reversed port / local host on port 8000 for physical phone access
+export const DEFAULT_BACKEND_URL = "http://127.0.0.1:8000";
 
 let currentBackendUrl = DEFAULT_BACKEND_URL;
 

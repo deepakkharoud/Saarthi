@@ -64,12 +64,21 @@ async def test_routing_endpoint_success():
 
         response = client.post("/api/v1/routing/walk", json=payload)
         assert response.status_code == 200
+        route_request = mock_post.call_args.kwargs["json"]
+        pedestrian_options = route_request["costing_options"]["pedestrian"]
+        assert pedestrian_options["type"] == "blind"
+        assert "use_stairs" not in pedestrian_options
+        assert pedestrian_options["step_penalty"] == 300.0
         data = response.json()
         assert data["status"] == "success"
         assert data["total_distance_meters"] == 154.0
         assert len(data["maneuvers"]) == 2
         assert "Block 1" in data["spoken_summary"]
         assert len(data["coordinates"]) >= 1
+        assert data["has_stairs"] is False
+        assert data["accessibility_status"] == "unknown"
+        assert "cannot confirm" in data["stairs_warning"].lower()
+        assert "cannot confirm" in data["spoken_summary"].lower()
 
 
 @pytest.mark.anyio
@@ -105,3 +114,55 @@ async def test_routing_endpoint_timeout():
         data = response.json()
         assert data["status"] == "error"
         assert "timed out" in data["error_message"].lower()
+
+
+@pytest.mark.anyio
+async def test_routing_endpoint_stairs_detected():
+    mock_valhalla_payload = {
+        "trip": {
+            "summary": {"length": 0.200, "time": 150.0},
+            "legs": [
+                {
+                    "shape": "kabuy@qcz`qCbA?~DT",
+                    "maneuvers": [
+                        {
+                            "instruction": "Walk south for 50 meters.",
+                            "length": 0.050,
+                            "time": 35.0,
+                            "type": 1,
+                            "begin_shape_index": 0,
+                        },
+                        {
+                            "instruction": "Walk down steps toward footbridge.",
+                            "length": 0.030,
+                            "time": 30.0,
+                            "type": 27,
+                            "begin_shape_index": 1,
+                        },
+                    ],
+                }
+            ],
+        }
+    }
+
+    mock_resp = httpx.Response(200, json=mock_valhalla_payload, request=httpx.Request("POST", "http://test"))
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = mock_resp
+
+        payload = {
+            "start": {"latitude": 30.770726, "longitude": 76.576329},
+            "destination": {"latitude": 30.769660, "longitude": 76.575543},
+            "destination_name": "Footbridge",
+            "avoid_stairs": True,
+        }
+
+        response = client.post("/api/v1/routing/walk", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert data["has_stairs"] is True
+        assert data["accessibility_status"] == "contains_stairs"
+        assert data["stairs_warning"] is not None
+        assert "map data marks stairs" in data["stairs_warning"]
+        assert "map data marks stairs" in data["spoken_summary"]
