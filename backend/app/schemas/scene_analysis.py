@@ -10,8 +10,8 @@ Returns validated structured information including:
 
 All distances, collision risks, and depth claims are excluded per safety rules.
 """
-from typing import List, Optional
-from pydantic import BaseModel, Field
+from typing import List, Literal, Optional
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DetectedObject(BaseModel):
@@ -55,6 +55,39 @@ class DetectedText(BaseModel):
     )
 
 
+class GroundedObjectSearchResult(BaseModel):
+    """Result of a targeted visual search for an object (e.g. 'Where are my keys?')."""
+
+    is_found: bool = Field(
+        ...,
+        description="True only if the model visibly identified the requested target object.",
+    )
+    target_object: str = Field(
+        ...,
+        description="The object requested by the user (e.g. 'keys', 'backpack', 'bottle').",
+        max_length=100,
+    )
+    relative_frame_position: Optional[str] = Field(
+        default=None,
+        description="Grounded qualitative position in the camera frame (e.g. 'near the lower-left side of the table'). Never physical distance.",
+        max_length=200,
+    )
+    confidence: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Confidence of detection.",
+    )
+    next_action: Literal["located", "sweep_camera", "improve_lighting", "continue_scanning"] = Field(
+        default="continue_scanning",
+        description="Instruction for blind user: 'located', 'sweep_camera', 'improve_lighting', or 'continue_scanning'.",
+    )
+    spoken_description: str = Field(
+        ...,
+        description="Concise spoken sentence for text-to-speech output.",
+    )
+
+
 class SceneAnalysisRequest(BaseModel):
     """Request for structured scene analysis."""
 
@@ -67,6 +100,8 @@ class SceneAnalysisRequest(BaseModel):
         description="Optional user question about the scene (e.g. 'What sign is this?', 'Describe my surroundings').",
         max_length=2000,
     )
+    target_object: Optional[str] = Field(default=None, description="Specific visible object to locate in the frame.", max_length=100)
+    previous_description: Optional[str] = Field(default=None, description="Prior scene observation for change comparison.", max_length=2000)
     mime_type: str = Field(
         default="image/jpeg",
         description="MIME type. Must be image/jpeg or image/png.",
@@ -104,6 +139,7 @@ class SceneAnalysisResponse(BaseModel):
         default_factory=list,
         description="Text fragments extracted from signs, notices, screens.",
     )
+    search_result: Optional[GroundedObjectSearchResult] = Field(default=None, description="Grounded target search outcome when a specific object was requested.")
     spatial_description: Optional[str] = Field(
         default=None,
         description="Brief spatial layout description only when clearly supported by the image. Null if uncertain.",
@@ -134,3 +170,61 @@ class SceneAnalysisResponse(BaseModel):
         le=1.0,
         description="Overall analysis confidence.",
     )
+
+
+LiveClientMessageType = Literal[
+    "activate",
+    "frame",
+    "query",
+    "pause",
+    "resume",
+    "stop",
+    "ping",
+]
+
+LiveServerMessageType = Literal[
+    "session_state",
+    "description",
+    "object_search_result",
+    "error",
+    "pong",
+    "session_terminated",
+]
+
+
+class LiveClientMessage(BaseModel):
+    """Inbound message from client over WebSocket."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    type: LiveClientMessageType = Field(..., description="Message intent.")
+    session_id: Optional[str] = Field(default=None, max_length=128)
+    seq: Optional[int] = Field(default=0, ge=0, description="Monotonically increasing sequence number.")
+    timestamp: Optional[float] = Field(default=None, description="Client unix epoch timestamp in seconds.")
+    image_base64: Optional[str] = Field(default=None, alias="data", description="JPEG image frame Base64 encoded.")
+    mime_type: Optional[str] = Field(default="image/jpeg")
+    query: Optional[str] = Field(default=None, max_length=2000, description="Spoken user question.")
+    target_object: Optional[str] = Field(default=None, max_length=100, description="Target object for search.")
+
+
+class LiveServerMessage(BaseModel):
+    """Outbound message from server to client over WebSocket."""
+
+    type: LiveServerMessageType = Field(..., description="Message type.")
+    session_id: Optional[str] = Field(default=None)
+    seq: Optional[int] = Field(default=None)
+    status: Optional[str] = Field(default=None, description="Session status: connecting, active, paused, closed, error.")
+    model: Optional[str] = Field(default=None)
+    spoken_description: Optional[str] = Field(default=None)
+    search_result: Optional[GroundedObjectSearchResult] = Field(default=None)
+    image_quality: Optional[str] = Field(default="adequate")
+    confidence: Optional[float] = Field(default=None)
+    uncertainties: List[str] = Field(default_factory=list)
+    unchecked_areas: List[str] = Field(
+        default_factory=lambda: [
+            "Ground-level obstacles and drop-offs below the camera field of view",
+            "Areas behind the camera or outside the visible frame",
+        ]
+    )
+    error: Optional[str] = Field(default=None)
+    recoverable: Optional[bool] = Field(default=True)

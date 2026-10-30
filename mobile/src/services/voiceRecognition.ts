@@ -12,6 +12,15 @@ export interface SpeechRecognitionCallbacks {
   onEnd?: () => void;
 }
 
+export interface SpeechRecognitionStartOptions {
+  contextualStrings?: string[];
+  /** Keep continuous sessions open after delivering a complete transcript. */
+  keepListeningAfterFinal?: boolean;
+  requiresOnDeviceRecognition?: boolean;
+  androidRecognitionServicePackage?: string;
+  languageTag?: string;
+}
+
 function hasNativeModule(name: string): boolean {
   try {
     const g = globalThis as any;
@@ -172,11 +181,45 @@ class VoiceRecognitionService {
     }
   }
 
+  /** Check whether Android has an installed offline model for the requested language. */
+  public async getInstalledOnDeviceLocale(languageTag: string): Promise<string | null> {
+    if (Platform.OS !== "android" || typeof this.module?.getSupportedLocales !== "function") {
+      return null;
+    }
+    try {
+      const result = await this.module.getSupportedLocales({
+        androidRecognitionServicePackage: "com.google.android.as",
+      });
+      const installedLocales: string[] = result?.installedLocales || [];
+      const normalizeLocale = (locale: string) => locale.replace(/_/g, "-").toLocaleLowerCase();
+      const normalizedRequest = normalizeLocale(languageTag);
+      const exactMatch = installedLocales.find(
+        (locale) => normalizeLocale(locale) === normalizedRequest
+      );
+      if (exactMatch) return exactMatch;
+
+      // Prefer the installed English variant (for example en-IN) over requesting
+      // en-US when only a regional English model is present on the device.
+      const requestedLanguage = normalizedRequest.split("-")[0];
+      return (
+        installedLocales.find(
+          (locale) => normalizeLocale(locale).split("-")[0] === requestedLanguage
+        ) || null
+      );
+    } catch (error) {
+      console.warn("[SAARTHI Voice] Could not inspect offline speech models:", error);
+      return null;
+    }
+  }
+
   /**
    * Start listening for the user's spoken question.
    * Uses monotonic session IDs to filter stale 'end' or 'error' events from previous sessions.
    */
-  public async startListening(callbacks: SpeechRecognitionCallbacks): Promise<void> {
+  public async startListening(
+    callbacks: SpeechRecognitionCallbacks,
+    options: SpeechRecognitionStartOptions = {}
+  ): Promise<void> {
     const status = this.checkAvailability();
     if (!status.available || !this.module) {
       const reason =
@@ -231,7 +274,7 @@ class VoiceRecognitionService {
               this.finalTranscriptTimer = null;
               this.pendingFinalTranscript = "";
               if (!completedTranscript) return;
-              this.stopListening();
+              if (!options.keepListeningAfterFinal) this.stopListening();
               callbacks.onResult?.({ transcript: completedTranscript, isFinal: true });
             }, 2200);
           } else {
@@ -252,12 +295,14 @@ class VoiceRecognitionService {
           this.pendingFinalTranscript = "";
           this.stopListening();
           callbacks.onResult?.({ transcript: completedTranscript, isFinal: true });
+          if (options.keepListeningAfterFinal) callbacks.onEnd?.();
           return;
         }
         this.isListening = false;
-        callbacks.onError?.(
-          event?.message || event?.error || "Speech recognition encountered an error."
-        );
+        const errorDetails = [event?.error, event?.message]
+          .filter((detail): detail is string => typeof detail === "string" && detail.length > 0)
+          .join(": ");
+        callbacks.onError?.(errorDetails || "Speech recognition encountered an error.");
       });
 
       const unsubEnd = this.module.addListener?.("end", () => {
@@ -291,11 +336,14 @@ class VoiceRecognitionService {
       };
 
       this.module.start({
-        lang: "en-US",
+        lang: options.languageTag || "en-US",
         interimResults: true,
         // Continuous mode is supported on Android 13+ and allows natural
         // pauses without finalizing the whole command immediately.
         continuous: Platform.OS !== "android" || Number(Platform.Version) >= 33,
+        requiresOnDeviceRecognition: options.requiresOnDeviceRecognition,
+        androidRecognitionServicePackage: options.androidRecognitionServicePackage,
+        contextualStrings: options.contextualStrings,
         androidIntentOptions: {
           EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS: 20000,
           EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS: 12000,

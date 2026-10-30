@@ -47,6 +47,7 @@ export class GlobalVoiceService {
   private dispatchContextProvider: (() => VoiceCommandDispatchContext) | null = null;
 
   private startTimer: ReturnType<typeof setTimeout> | null = null;
+  private welcomeFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   private ttsPollInterval: ReturnType<typeof setInterval> | null = null;
   private consecutiveErrors: number = 0;
   private ttsCheckAttempts: number = 0;
@@ -109,7 +110,10 @@ export class GlobalVoiceService {
   /**
    * Activates global voice mode with spoken greeting and microphone listening.
    */
-  public async enableVoiceMode(customWelcome?: string): Promise<boolean> {
+  public async enableVoiceMode(
+    customWelcome?: string,
+    initialCommand?: string
+  ): Promise<boolean> {
     if (this.isActive && !this.isPaused) {
       return true;
     }
@@ -168,21 +172,31 @@ export class GlobalVoiceService {
         this.isSpeaking = false;
         this.notify();
         console.log("[SAARTHI Voice State] Welcome speech completed or timed out, scheduling listening start");
-        this.scheduleStartListening(300);
+        if (initialCommand?.trim()) {
+          void this.handleFinalTranscript(initialCommand);
+        } else {
+          this.scheduleStartListening(300);
+        }
       }
     };
 
     // Safety fallback timer: welcome utterance is ~92 chars (~5.5s). At 7s, start listening anyway if onDone didn't fire
-    const fallbackTimer = setTimeout(triggerStart, 7000);
+    if (this.welcomeFallbackTimer) clearTimeout(this.welcomeFallbackTimer);
+    this.welcomeFallbackTimer = setTimeout(() => {
+      this.welcomeFallbackTimer = null;
+      triggerStart();
+    }, 7000);
 
     await speechService.speak(welcome, {
       force: true,
       onDone: () => {
-        clearTimeout(fallbackTimer);
+        if (this.welcomeFallbackTimer) clearTimeout(this.welcomeFallbackTimer);
+        this.welcomeFallbackTimer = null;
         triggerStart();
       },
       onError: () => {
-        clearTimeout(fallbackTimer);
+        if (this.welcomeFallbackTimer) clearTimeout(this.welcomeFallbackTimer);
+        this.welcomeFallbackTimer = null;
         triggerStart();
       },
     });
@@ -565,6 +579,10 @@ export class GlobalVoiceService {
   }
 
   private clearTimers(): void {
+    if (this.welcomeFallbackTimer) {
+      clearTimeout(this.welcomeFallbackTimer);
+      this.welcomeFallbackTimer = null;
+    }
     if (this.startTimer) {
       clearTimeout(this.startTimer);
       this.startTimer = null;

@@ -13,6 +13,7 @@ import {
 import type { AppScreen } from "../../App";
 import { speechService } from "./speech";
 import { readingPipeline, ReadingPipelineResult } from "./readingPipeline";
+import { liveAssistService } from "./liveAssistService";
 
 export interface VoiceCommandDispatchContext {
   currentScreen: AppScreen;
@@ -40,6 +41,8 @@ export interface VoiceCommandDispatchContext {
   onMapRecenter?: () => Promise<void> | void;
   onMapWhereAmI?: () => Promise<void> | void;
   onMapGetStatus?: () => Promise<void> | void;
+  onAssistSearchTarget?: (targetObject: string) => Promise<string> | string;
+  onAssistWhatChanged?: () => Promise<string> | string;
 }
 
 
@@ -406,6 +409,34 @@ export async function dispatchVoiceCommand(
       return spoken;
     }
 
+
+    case "find_object": {
+      if (currentScreen === "assist") {
+        if (context.onAssistSearchTarget) return await context.onAssistSearchTarget(parsed.targetObject || "object");
+        const msg = "Camera scanning is not ready yet. Please open the scanner and try again.";
+        await speechService.speak(msg, { force: true });
+        return msg;
+      }
+      const msg = "Opening camera scanning. Ask again when the camera view is ready to search for that object.";
+      await speechService.speak(msg, { force: true });
+      if (context.onNavigateToAssist) context.onNavigateToAssist();
+      else context.onNavigateToScreen?.("assist");
+      return msg;
+    }
+
+    case "what_changed": {
+      if (currentScreen === "assist" && context.onAssistWhatChanged) return await context.onAssistWhatChanged();
+      if (currentScreen === "assist") {
+        const msg = "Camera scanning is not ready yet. Please try again.";
+        await speechService.speak(msg, { force: true });
+        return msg;
+      }
+      const msg = "Opening camera scanning to compare the view.";
+      await speechService.speak(msg, { force: true });
+      if (context.onNavigateToAssist) context.onNavigateToAssist();
+      else context.onNavigateToScreen?.("assist");
+      return msg;
+    }
 
     case "what_is_ahead": {
       const desc = "Opening Live Camera Assist with Gemma 4 vision.";

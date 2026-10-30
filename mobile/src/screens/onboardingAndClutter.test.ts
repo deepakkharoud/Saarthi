@@ -56,7 +56,7 @@ import { globalVoiceService } from "../services/globalVoiceService";
 
 const ONBOARDING_KEY = "@saarthi_onboarding_played";
 const EXPECTED_ONBOARDING_TEXT =
-  "Welcome to SAARTHI! Tap the purple Voice Assistant tile at the bottom right to activate voice control. Then speak naturally to navigate the app.";
+  "Welcome to SAARTHI! While the app is open on Home, say Hey Saarthi to activate voice control. Then choose Live Visual Scan, Read Anything, Campus Map, My Day, or Talk to Saarthi.";
 
 describe("First-Launch Voice Onboarding and Clutter Reduction", () => {
   beforeEach(async () => {

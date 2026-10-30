@@ -24,6 +24,8 @@ export type VoiceIntentType =
   | "summarize_this"
   | "scan_again"
   | "what_is_ahead"
+  | "what_changed"
+  | "find_object"
   | "where_am_i"
   | "what_can_i_do"
   | "next_class"
@@ -58,6 +60,7 @@ export interface ParsedVoiceCommand {
   rawTranscript: string;
   targetScreen?: AppScreen;
   destinationQuery?: string;
+  targetObject?: string;
   categoryQuery?: string;
   readingMode?: "auto" | "timetable" | "sign" | "notice" | "surroundings";
   confidence: number;
@@ -630,6 +633,11 @@ export function parseVoiceCommand(transcript: string): ParsedVoiceCommand {
     };
   }
 
+  // Scanner-specific scene-change request.
+  if (cleaned === "what changed" || cleaned === "did anything change" || cleaned === "what has changed") {
+    return { intent: "what_changed", rawTranscript: transcript, confidence: 0.95 };
+  }
+
   // 11. WHAT IS AHEAD intent
   if (
     cleaned === "what is ahead" ||
@@ -715,6 +723,22 @@ export function parseVoiceCommand(transcript: string): ParsedVoiceCommand {
           categoryQuery: cat,
           confidence: 0.95,
         };
+      }
+    }
+  }
+
+  // Scanner-specific object search; placed after nearby-place parsing to preserve map intents.
+  const objectSearchPatterns = [
+    /^(?:where are|where is) (?:my|the|a|an) (.+)$/,
+    /^(?:find|locate|look for) (?:my|the|a|an) (.+)$/,
+    /^(?:find|locate|look for) (.+)$/,
+  ];
+  for (const pattern of objectSearchPatterns) {
+    const match = cleaned.match(pattern);
+    if (match?.[1]) {
+      const targetObject = match[1].trim();
+      if (targetObject.length >= 2) {
+        return { intent: "find_object", rawTranscript: transcript, targetObject, confidence: 0.92 };
       }
     }
   }

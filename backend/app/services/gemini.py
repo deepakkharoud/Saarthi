@@ -232,19 +232,12 @@ def analyze_image(
         "Be completely honest about uncertainty: if the object is blurry, partially cut off, or the lighting is poor, say so plainly. Never guess or hallucinate objects without clear visual evidence."
     )
 
-    try:
-        config = types.GenerateContentConfig(
-            max_output_tokens=800,
-            temperature=0.2,
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
-            system_instruction=system_instruction,
-        )
-    except Exception:
-        config = types.GenerateContentConfig(
-            max_output_tokens=800,
-            temperature=0.2,
-            system_instruction=system_instruction,
-        )
+    # Keep generation settings model-neutral: Gemini and Gemma versions do not
+    # share the same thinking-budget or sampling-parameter support.
+    config = types.GenerateContentConfig(
+        max_output_tokens=800,
+        system_instruction=system_instruction,
+    )
 
     logger.info(
         "Gemini vision call initiated: model=%s, image_size=%d bytes, mime_type=%s, prompt_len=%d",

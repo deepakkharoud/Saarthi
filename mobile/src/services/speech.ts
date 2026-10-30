@@ -1,5 +1,5 @@
 import * as Speech from "expo-speech";
-import { Platform } from "react-native";
+import { AccessibilityInfo, Platform } from "react-native";
 
 class SpeechService {
   private isSpeakingActive: boolean = false;
@@ -19,6 +19,14 @@ class SpeechService {
    */
   public async initVoices(): Promise<void> {
     if (this.voicesInitialized) return;
+    // Android's Expo TTS bridge can return a null native voice list on some
+    // engines. Leaving voice unset lets Android use its default TTS voice and
+    // avoids the native `TextToSpeech.voices` null crash during speak().
+    if (Platform.OS === "android") {
+      this.voicesInitialized = true;
+      return;
+    }
+
     try {
       const voices = await Speech.getAvailableVoicesAsync();
       this.voicesInitialized = true;
@@ -114,6 +122,23 @@ class SpeechService {
     this.isSpeakingActive = true;
 
     // Build speech options
+    let playbackSettled = false;
+    const finishPlayback = () => {
+      if (playbackSettled) return;
+      playbackSettled = true;
+      this.notifyPlaybackEnd();
+    };
+    const handleSpeechError = (err: unknown) => {
+      finishPlayback();
+      console.warn("[SAARTHI Speech] Native speech playback failed:", err);
+      try {
+        AccessibilityInfo.announceForAccessibility(cleanText);
+      } catch {
+        // Keep the voice flow usable when accessibility announcements are unavailable.
+      }
+      options?.onError?.(err);
+    };
+
     const speechOptions: Speech.SpeechOptions = {
       rate: options?.rate ?? (Platform.OS === "ios" ? 0.92 : 0.95),
       pitch: options?.pitch ?? 1.0,
@@ -124,22 +149,18 @@ class SpeechService {
         console.log("[SAARTHI Speech] Audio playback started.");
       },
       onDone: () => {
-        this.notifyPlaybackEnd();
+        finishPlayback();
         console.log("[SAARTHI Speech] Audio playback completed.");
         if (options?.onDone) {
           options.onDone();
         }
       },
       onStopped: () => {
-        this.notifyPlaybackEnd();
+        finishPlayback();
         console.log("[SAARTHI Speech] Audio playback stopped.");
       },
       onError: (err) => {
-        this.notifyPlaybackEnd();
-        console.warn("[SAARTHI Speech] Audio playback error:", err);
-        if (options?.onError) {
-          options.onError(err);
-        }
+        handleSpeechError(err);
       },
     };
 
@@ -148,20 +169,22 @@ class SpeechService {
       speechOptions.language = options.language;
     } else if (this.preferredLanguage) {
       speechOptions.language = this.preferredLanguage;
+    } else if (Platform.OS === "android") {
+      speechOptions.language = "en-US";
     }
 
-    if (this.preferredVoiceIdentifier) {
+    if (Platform.OS !== "android" && this.preferredVoiceIdentifier) {
       speechOptions.voice = this.preferredVoiceIdentifier;
     }
 
     try {
+      // expo-speech exposes a void return; native failures are delivered via
+      // `onError`. Do not treat the return value as a Promise.
       Speech.speak(cleanText, speechOptions);
     } catch (err) {
       this.isSpeakingActive = false;
       console.error("[SAARTHI Speech] Unexpected exception calling Speech.speak:", err);
-      if (options?.onError) {
-        options.onError(err);
-      }
+      handleSpeechError(err);
     }
   }
 

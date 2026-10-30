@@ -14,6 +14,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { Colors } from "./src/theme/colors";
 import { speechService } from "./src/services/speech";
+import { liveAssistService } from "./src/services/liveAssistService";
 import { NavigationRoute, CampusGraph } from "./src/navigation/campusRouter";
 import { CampusLocalizer, LocalizationResult } from "./src/navigation/localization";
 import { ReadingPipelineResult } from "./src/services/readingPipeline";
@@ -673,6 +674,20 @@ export function SaarthiApp() {
       },
       onNavigateToAssist: () => {
         handleNavigate("assist");
+      },
+      onAssistSearchTarget: async (targetObject: string) => {
+        if (currentScreen !== "assist") {
+          handleNavigate("assist");
+          await new Promise<void>((resolve) => setTimeout(resolve, 850));
+        }
+        return await liveAssistService.searchTargetObject(targetObject);
+      },
+      onAssistWhatChanged: async () => {
+        if (currentScreen !== "assist") {
+          handleNavigate("assist");
+          await new Promise<void>((resolve) => setTimeout(resolve, 850));
+        }
+        return await liveAssistService.whatChanged();
       },
       onNavigateToNavigation: (dest) => {
         setNavDestinationQuery(dest || "");

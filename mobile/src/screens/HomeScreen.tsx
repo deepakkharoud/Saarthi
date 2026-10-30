@@ -133,6 +133,7 @@ export interface HomeScreenProps {
   onCancelRoute: () => void;
   onRepeatRouteStep: () => void;
   isVoiceModeActive?: boolean;
+  wakeWordStatus?: string;
   onToggleVoiceMode?: () => void;
   showOnboarding?: boolean;
   onDismissOnboarding?: () => void;
@@ -144,6 +145,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   onCancelRoute,
   onRepeatRouteStep,
   isVoiceModeActive = false,
+  wakeWordStatus = "Say Hey Saarthi or tap Talk to Saarthi.",
   onToggleVoiceMode,
   showOnboarding = false,
   onDismissOnboarding,
@@ -211,6 +213,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const handleReadCampusText = async () => {
     await hapticsService.triggerTopLeft();
     onNavigate("reader");
+  };
+
+  const handleLiveVisualScan = async () => {
+    await hapticsService.triggerButtonPress();
+    onNavigate("assist");
   };
 
   const handleCampusNavigation = async () => {
@@ -334,7 +341,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           style={styles.onboardingBanner}
           accessible={true}
           accessibilityRole="alert"
-          accessibilityLabel="Welcome to SAARTHI! Tap the purple Voice Assistant tile at the bottom right to activate voice control. Then speak naturally to navigate the app."
+          accessibilityLabel="Welcome to SAARTHI! While the app is open on Home, say Hey Saarthi to activate voice control. Then choose Live Visual Scan, Read Anything, Campus Map, My Day, or Talk to Saarthi."
         >
           <View style={styles.onboardingIconWrap}>
             <Ionicons name="sparkles" size={20} color="#C084FC" />
@@ -342,7 +349,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           <View style={styles.onboardingTextWrap}>
             <Text style={styles.onboardingTitle}>Welcome to SAARTHI</Text>
             <Text style={styles.onboardingBody}>
-              Tap the purple Voice Assistant tile at the bottom right to activate voice control. Then speak naturally to navigate the app.
+              Say Hey Saarthi to activate voice control, then choose Live Visual Scan, Read Anything, Campus Map, My Day, or Talk to Saarthi.
             </Text>
           </View>
           {onDismissOnboarding && (
@@ -419,11 +426,26 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         </View>
 
         {/* Center Section: SAARTHI Campus Mode Branding & Honest Voice State */}
-        <View style={styles.centerBrandingSection} accessible={true} accessibilityRole="header">
-          <Text style={styles.brandTitle}>SAARTHI</Text>
+        <View style={styles.centerBrandingSection} accessible={false}>
+          <Text style={styles.brandTitle} accessibilityRole="header">SAARTHI</Text>
           <Text style={styles.brandSubtitle}>CAMPUS MODE</Text>
 
           {/* Audio Indicator: Real state only (never fake wave when inactive) */}
+          <Pressable
+            onPress={handleLiveVisualScan}
+            accessible={true}
+            accessibilityRole="button"
+            accessibilityLabel="Live Visual Scan"
+            accessibilityHint="Opens the live camera to describe visible surroundings and search for objects."
+            style={({ pressed }) => [
+              styles.visualScanButton,
+              pressed && styles.visualScanButtonPressed,
+            ]}
+          >
+            <Ionicons name="scan-outline" size={23} color="#082F49" />
+            <Text style={styles.visualScanButtonText}>Live Visual Scan</Text>
+          </Pressable>
+
           {isVoiceModeActive ? (
             <View style={styles.soundwaveContainer} accessibilityLabel="Voice active indicator">
               {waveHeights.map((h, i) => (
@@ -442,7 +464,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           ) : (
             <View style={styles.voiceStandbyContainer} accessibilityLabel="Voice assistant standby">
               <Ionicons name="mic-outline" size={16} color="#64748B" />
-              <Text style={styles.voiceStandbyText}>Voice standby • Tap bottom-right to speak</Text>
+              <Text style={styles.voiceStandbyText} accessibilityLabel={wakeWordStatus}>
+                {wakeWordStatus}
+              </Text>
             </View>
           )}
         </View>
@@ -677,6 +701,30 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingVertical: 14,
     minHeight: 140,
+  },
+  visualScanButton: {
+    minHeight: 60,
+    minWidth: 240,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    marginTop: 10,
+    paddingHorizontal: 20,
+    borderRadius: 18,
+    backgroundColor: "#38BDF8",
+    borderWidth: 2,
+    borderColor: "#7DD3FC",
+  },
+  visualScanButtonPressed: {
+    opacity: 0.86,
+    transform: [{ scale: 0.97 }],
+  },
+  visualScanButtonText: {
+    color: "#082F49",
+    fontSize: 16,
+    fontWeight: "900",
+    letterSpacing: 0.2,
   },
   brandTitle: {
     color: "#FFFFFF",

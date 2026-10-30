@@ -50,4 +50,7 @@ This document tracks all external code, libraries, and assets used in the **Saar
 ---
 
 ## Third-Party Code Snippets
-*No third-party code snippets have been copy-pasted into this repository. All external functionality is strictly consumed via licensed package managers.*
+| Repository | License | What was adapted | Rationale |
+| :--- | :--- | :--- | :--- |
+| https://github.com/LevionyxStudio/Saarthi (local source checkout: D:\Hacktober\DeepakJi) | Apache-2.0 | Visual scanning screen, live-assist orchestration, grounded object-search schema/service, and scanner-specific API routes | Integrates the existing scanner into this repo while leaving navigation, wake-word, map, and unrelated voice code in place. |
+| https://github.com/GoogleCloudPlatform/generative-ai | Apache-2.0 | Gemini Live session integration pattern referenced by the scanner's live-session adapter | Provides the visual scanner with an optional server-managed live stream; REST scene analysis remains the fallback. |
